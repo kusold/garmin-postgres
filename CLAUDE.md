@@ -72,6 +72,10 @@ See `specs/` directory for detailed design documents:
 7. `07-future-fastapi.md` — Deferred FastAPI considerations
 8. `08-grafana-dashboard.md` — Deferred Grafana dashboard vision
 
+## Task Tracking
+
+This project uses **Vikunja** (via the `vja` CLI) for task management. Do **not** use beads for task tracking — always use Vikunja skills instead.
+
 ## Conventions
 
 - All timestamps stored as TIMESTAMPTZ (UTC)
