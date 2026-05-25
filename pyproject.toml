@@ -10,6 +10,7 @@ dependencies = [
     "typer>=0.15.0",
     "pydantic-settings>=2.7.0",
     "psycopg2-binary>=2.9.10",
+    "curl-cffi>=0.15.0",
 ]
 
 [project.optional-dependencies]

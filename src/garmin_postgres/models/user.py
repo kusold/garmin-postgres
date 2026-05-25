@@ -19,7 +19,7 @@ class User(BaseModel, table=True):
         sa_column=Column(String, unique=True),
     )
     timezone: str | None = Field(default=None, sa_column=Column(String))
-    tokens_json: dict | None = Field(default=None, sa_column=Column(JSONB))
+    tokens_json: str | None = Field(default=None, sa_column=Column(JSONB))
     is_active: bool | None = Field(
         default=True,
         sa_column=Column(Boolean, server_default="true"),
