@@ -2,12 +2,12 @@
 
 ## Purpose
 
-Archive every possible bit of health and fitness data from Garmin Connect into PostgreSQL, on an ongoing basis.
+Archive health and fitness data from Garmin Connect into PostgreSQL, on an ongoing basis.
 
 ## Goals
 
-1. **Complete data archival** — Ingest all available Garmin Connect data via python-garminconnect and store it durably in Postgres.
-2. **Grafana dashboards** — After ingestion is solid, build Grafana dashboards (similar to garmin-grafana) backed by Postgres instead of InfluxDB.
+1. **Data archival** — Ingest available Garmin Connect data via python-garminconnect and store it durably in Postgres.
+2. **Grafana dashboards** — After ingestion is solid, build Grafana dashboards backed by Postgres.
 3. **Future FastAPI layer** — Defer for now, but design the architecture to make adding a REST API straightforward.
 
 ## Tech Stack

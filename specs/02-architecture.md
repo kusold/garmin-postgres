@@ -7,14 +7,6 @@ garmin-postgres/
 ├── pyproject.toml
 ├── CLAUDE.md
 ├── specs/
-│   ├── 01-project-overview.md
-│   ├── 02-architecture.md
-│   ├── 03-database-schema.md
-│   ├── 04-authentication.md
-│   ├── 05-data-ingestion.md
-│   ├── 06-testing.md
-│   ├── 07-future-fastapi.md
-│   └── 08-grafana-dashboard.md
 ├── compose.yaml                    # Podman Compose (Postgres + future Grafana)
 ├── alembic.ini
 ├── alembic/
@@ -27,35 +19,16 @@ garmin-postgres/
 │       ├── cli.py                  # CLI entry point (auth setup, manual ingest)
 │       ├── config.py               # Pydantic Settings (env vars, DB URL)
 │       ├── db.py                   # Engine, session factory, init
+│       ├── auth.py                 # OAuth login flow, token management
 │       ├── models/                 # SQLModel table definitions
 │       │   ├── __init__.py         # Re-exports all models
 │       │   ├── base.py             # Shared mixins, naming convention
-│       │   ├── user.py             # User model
-│       │   ├── daily_summary.py    # Daily stats, hydration, etc.
-│       │   ├── heart_rate.py       # Intraday HR
-│       │   ├── steps.py            # Intraday steps
-│       │   ├── stress.py           # Intraday stress
-│       │   ├── sleep.py            # Sleep summary + intraday
-│       │   ├── body_battery.py     # Body battery events
-│       │   ├── activities.py       # Activities, laps, splits, tracks
-│       │   ├── body_composition.py # Weight, BMI, etc.
-│       │   ├── blood_pressure.py   # BP readings
-│       │   ├── hrv.py              # HRV data
-│       │   ├── spo2.py             # SpO2 readings
-│       │   ├── respiration.py      # Breathing rate
-│       │   ├── training.py         # Training status, readiness, etc.
-│       │   ├── devices.py          # Device info
-│       │   └── gear.py             # Gear/equipment
+│       │   └── user.py             # User model
 │       ├── ingest/                 # Ingestion logic
 │       │   ├── __init__.py
 │       │   ├── client.py           # Garmin client wrapper (auth + API calls)
 │       │   ├── pipeline.py         # Orchestration: fetch → parse → upsert
 │       │   └── parsers/            # Per-data-type parsing from raw JSON → models
-│       │       ├── __init__.py
-│       │       ├── daily.py
-│       │       ├── heart_rate.py
-│       │       ├── sleep.py
-│       │       ├── activities.py
 │       │       └── ...
 ├── tests/
 │   ├── conftest.py                 # Shared fixtures (Postgres container, session)
@@ -73,7 +46,7 @@ garmin-postgres/
 ## Module Responsibilities
 
 ### `cli.py`
-Entry point for all CLI commands. Uses `click` or `typer`. Commands:
+Entry point for all CLI commands. Uses `typer`. Commands:
 - `garmin-postgres auth login` — Interactive OAuth flow (email/password + MFA)
 - `garmin-postgres auth status` — Show current auth status
 - `garmin-postgres ingest run` — Run a single ingestion pass
@@ -84,7 +57,6 @@ Entry point for all CLI commands. Uses `click` or `typer`. Commands:
 ### `config.py`
 Pydantic `BaseSettings` class. All config via environment variables or `.env` file:
 - `DATABASE_URL` — Postgres connection string
-- `GARMIN_TOKEN_DIR` — Directory for garth token storage
 - `LOG_LEVEL` — Logging verbosity
 - `INGEST_DAYS_BACK` — How many days back to fetch on each run (default: 1)
 

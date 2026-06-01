@@ -32,23 +32,6 @@ async def get_async_session():
 
 FastAPI's `Depends(get_async_session)` pattern works naturally.
 
-### Model Separation
-
-SQLModel models are already split into table models and can be extended with API models:
-
-```python
-# Existing table model
-class Activity(ActivityBase, table=True):
-    id: int | None = Field(default=None, primary_key=True)
-    user_id: int = Field(foreign_key="users.id")
-    ...
-
-# Future API response model
-class ActivityPublic(ActivityBase):
-    id: int
-    user_id: int
-```
-
 ### Project Structure Compatibility
 
 The current `src/garmin_postgres/` layout separates models, ingestion, and config. Adding an `api/` directory alongside them is natural:
@@ -69,7 +52,7 @@ src/garmin_postgres/
 
 When implemented, the API would provide:
 
-- REST endpoints for querying ingested data (activities, daily summaries, sleep, etc.)
+- REST endpoints for querying ingested data
 - User authentication (separate from Garmin auth — local JWT or API keys)
 - Read-only access to archived data
 - Optional: real-time ingestion trigger

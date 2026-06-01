@@ -70,8 +70,7 @@ def test_parse_heart_rate(fixture_loader):
 ### 3. Ingestion Pipeline Tests (`tests/ingest/`)
 
 Integration tests with the real database:
-- Upsert a daily summary, then upsert again with updated values — verify the second write updated the row
-- Insert an activity with tracks, laps, splits — verify all foreign keys resolve
+- Upsert a record, then upsert again with updated values — verify the second write updated the row
 - Test the date-range logic for incremental vs backfill runs
 - Test that pipeline continues when one data type fails
 
@@ -91,29 +90,14 @@ Test the Garmin client wrapper with mocked API responses (using `responses` or `
 
 ## Fixture Data
 
-Sample Garmin API JSON responses stored in `tests/parsers/fixtures/`:
+Sample Garmin API JSON responses stored in `tests/parsers/fixtures/`. These are captured from real Garmin API responses during development and stripped of personally identifying information.
 
-```
-tests/parsers/fixtures/
-├── get_stats.json
-├── get_heart_rates.json
-├── get_steps_data.json
-├── get_all_day_stress.json
-├── get_sleep_data.json
-├── get_hrv_data.json
-├── get_respiration_data.json
-├── get_spo2_data.json
-├── get_body_composition.json
-├── get_activities.json
-├── get_activity_detail.json
-├── get_activity_splits.json
-├── get_activity_weather.json
-├── get_training_status.json
-├── get_race_predictions.json
-└── ...
-```
+## Coverage Target
 
-These fixtures are captured from real Garmin API responses during development and anonymized for test use.
+- **Parsers**: 100% (pure functions, easy to cover)
+- **Models**: 95%+ (constraint validation)
+- **Pipeline**: 80%+ (error paths are hard to trigger)
+- **Client wrapper**: 90%+ (mocked API responses)
 
 ## Test Configuration
 
@@ -127,13 +111,6 @@ markers = [
     "integration: marks integration tests requiring a database",
 ]
 ```
-
-## Coverage Target
-
-- **Parsers**: 100% (pure functions, easy to cover)
-- **Models**: 95%+ (constraint validation)
-- **Pipeline**: 80%+ (error paths are hard to trigger)
-- **Client wrapper**: 90%+ (mocked API responses)
 
 ## Running Tests
 
