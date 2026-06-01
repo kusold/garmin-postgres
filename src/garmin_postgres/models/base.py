@@ -14,16 +14,34 @@ NAMING_CONVENTION = {
 SQLModel.metadata.naming_convention = NAMING_CONVENTION
 
 
-class BaseModel(SQLModel):
-    id: int | None = Field(
+# Factory functions that create fresh Column objects per model.
+# SQLModel shares sa_column Column instances across subclasses,
+# causing "Column already assigned to Table" errors. Calling these
+# in each model class creates unique Column objects.
+def pk_field():
+    return Field(
         default=None,
         sa_column=Column(BigInteger, primary_key=True, autoincrement=True),
     )
-    created_at: datetime | None = Field(
+
+
+def created_at_field():
+    return Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), server_default=func.now()),
     )
-    updated_at: datetime | None = Field(
+
+
+def updated_at_field():
+    return Field(
         default=None,
-        sa_column=Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now()),
+        sa_column=Column(
+            DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+        ),
     )
+
+
+class BaseModel(SQLModel):
+    id: int | None = Field(default=None, primary_key=True)
+    created_at: datetime | None = Field(default=None)
+    updated_at: datetime | None = Field(default=None)

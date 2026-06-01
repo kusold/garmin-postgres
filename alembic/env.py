@@ -5,6 +5,7 @@ from sqlalchemy import engine_from_config, pool
 from sqlmodel import SQLModel
 
 from garmin_postgres.config import get_settings
+import garmin_postgres.models  # noqa: F401 — register all models
 
 config = context.config
 
