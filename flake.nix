@@ -22,10 +22,11 @@
         {
           devShells.default = pkgs.mkShell {
             packages = with pkgs; [
-              python313
-              uv
+							rainfrog
               podman
+              python313
               stdenv.cc.cc.lib
+              uv
             ];
 
             shellHook = ''
