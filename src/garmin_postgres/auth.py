@@ -66,6 +66,7 @@ def load_user_client(session: Session, user: User) -> Garmin | None:
     try:
         garmin = Garmin()
         garmin.client.loads(user.tokens_json)
+        garmin.display_name = user.garmin_display_name
         return garmin
     except Exception:
         logger.warning("Failed to load tokens for user %s", user.garmin_display_name)
