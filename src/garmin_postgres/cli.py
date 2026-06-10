@@ -86,6 +86,10 @@ def run(
     dry_run: bool = typer.Option(False, "--dry-run", help="Fetch data but don't write to DB"),
 ) -> None:
     """Run incremental ingestion for all active users."""
+    if days_back is not None and days_back < 1:
+        typer.echo("--days-back must be at least 1", err=True)
+        raise typer.Exit(1)
+
     from garmin_postgres.ingest.pipeline import run_for_all_users
 
     _ensure_db_ready()

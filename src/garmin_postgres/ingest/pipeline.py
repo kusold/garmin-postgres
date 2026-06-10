@@ -136,7 +136,7 @@ def run_for_all_users(
         List of result dicts, one per user.
     """
     if end_date is None:
-        end_date = date.today()
+        end_date = date.today() - timedelta(days=1)
 
     if start_date is None:
         if days_back is None:
