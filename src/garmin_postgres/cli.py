@@ -83,6 +83,7 @@ def status() -> None:
 def run(
     user: str = typer.Option(None, "--user", "-u", help="Only ingest for this display name"),
     days_back: int = typer.Option(None, "--days-back", "-d", help="Days to look back (default: from config)"),
+    data_type: list[str] = typer.Option(None, "--data-type", "-t", help="Data types to ingest (daily_summary, activities)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Fetch data but don't write to DB"),
 ) -> None:
     """Run incremental ingestion for all active users."""
@@ -101,12 +102,13 @@ def run(
             days_back=days_back,
             user_filter=user,
             dry_run=dry_run,
+            data_types=data_type if data_type else None,
         )
 
     for result in results:
         name = result.pop("user")
-        for data_type, info in result.items():
-            typer.echo(f"  {name} / {data_type}: {info}")
+        for dtype, info in result.items():
+            typer.echo(f"  {name} / {dtype}: {info}")
 
 
 @ingest_app.command()
@@ -115,6 +117,7 @@ def backfill(
     days: int = typer.Option(365, "--days", "-d", help="Number of days to backfill"),
     start_date: str = typer.Option(None, "--start-date", help="Explicit start date (YYYY-MM-DD)"),
     end_date: str = typer.Option(None, "--end-date", help="Explicit end date (YYYY-MM-DD)"),
+    data_type: list[str] = typer.Option(None, "--data-type", "-t", help="Data types to ingest (daily_summary, activities)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Fetch data but don't write to DB"),
 ) -> None:
     """Run historical backfill for all active users."""
@@ -134,12 +137,13 @@ def backfill(
             days_back=days if not start_date else None,
             user_filter=user,
             dry_run=dry_run,
+            data_types=data_type if data_type else None,
         )
 
     for result in results:
         name = result.pop("user")
-        for data_type, info in result.items():
-            typer.echo(f"  {name} / {data_type}: {info}")
+        for dtype, info in result.items():
+            typer.echo(f"  {name} / {dtype}: {info}")
 
 
 if __name__ == "__main__":

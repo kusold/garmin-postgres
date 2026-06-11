@@ -8,7 +8,10 @@ from sqlmodel import Session
 from garmin_postgres.auth import load_user_client, save_tokens
 from garmin_postgres.config import get_settings
 from garmin_postgres.ingest.client import GarminClient
+from garmin_postgres.ingest.parsers.activity import parse_activity
 from garmin_postgres.ingest.parsers.daily_summary import parse_daily_summary
+from garmin_postgres.models.activity import Activity
+from garmin_postgres.models.activity_file import ActivityFile
 from garmin_postgres.models.daily_summary import DailySummary
 from garmin_postgres.models.user import User
 
@@ -39,6 +42,99 @@ def upsert_daily_summary(session: Session, summary: DailySummary) -> DailySummar
     return summary
 
 
+def upsert_activity(session: Session, activity: Activity) -> Activity:
+    """Insert or update an activity row using ON CONFLICT DO UPDATE.
+
+    The unique key is (user_id, activity_id). On conflict, update
+    activity_type, start_time, and raw_json.
+    """
+    data = {
+        "user_id": activity.user_id,
+        "activity_id": activity.activity_id,
+        "activity_type": activity.activity_type,
+        "start_time": activity.start_time,
+        "raw_json": activity.raw_json,
+    }
+
+    stmt = insert(Activity).values(**data)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["user_id", "activity_id"],
+        set_={
+            "activity_type": stmt.excluded.activity_type,
+            "start_time": stmt.excluded.start_time,
+            "raw_json": stmt.excluded.raw_json,
+        },
+    )
+    session.execute(stmt)
+    session.flush()
+
+    # Refresh to get the DB-assigned id (local PK) for FK references
+    existing = session.exec(
+        select(Activity).where(
+            Activity.user_id == activity.user_id,
+            Activity.activity_id == activity.activity_id,
+        )
+    ).first()
+    if existing:
+        activity.id = existing.id
+    return activity
+
+
+def upsert_activity_file(session: Session, activity_file: ActivityFile) -> ActivityFile:
+    """Insert or update an activity file row using ON CONFLICT DO UPDATE.
+
+    The unique key is (activity_id, file_format). On conflict, update
+    file_data and raw_json.
+    """
+    data = {
+        "activity_id": activity_file.activity_id,
+        "file_format": activity_file.file_format,
+        "file_data": activity_file.file_data,
+        "raw_json": activity_file.raw_json,
+    }
+
+    stmt = insert(ActivityFile).values(**data)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["activity_id", "file_format"],
+        set_={
+            "file_data": stmt.excluded.file_data,
+            "raw_json": stmt.excluded.raw_json,
+        },
+    )
+    session.execute(stmt)
+    session.flush()
+    return activity_file
+
+
+def _download_and_store_file(
+    session: Session,
+    client: GarminClient,
+    activity: Activity,
+) -> None:
+    """Download and store an activity's original file (FIT in ZIP).
+
+    Logs warnings on failure, never raises.
+    """
+    try:
+        file_data = client.download_activity(str(activity.activity_id))
+        af = ActivityFile(
+            activity_id=activity.id,
+            file_format="fit",
+            file_data=file_data,
+            raw_json={
+                "source_format": "original",
+                "downloaded_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        upsert_activity_file(session, af)
+    except Exception as e:
+        logger.warning(
+            "Failed to download file for activity %s: %s",
+            activity.activity_id,
+            e,
+        )
+
+
 def run_ingestion(
     session: Session,
     user: User,
@@ -46,6 +142,7 @@ def run_ingestion(
     end_date: date,
     *,
     dry_run: bool = False,
+    data_types: list[str] | None = None,
 ) -> dict:
     """Run ingestion for a single user over a date range.
 
@@ -55,6 +152,8 @@ def run_ingestion(
         start_date: First date to fetch (inclusive).
         end_date: Last date to fetch (inclusive).
         dry_run: If True, fetch data but don't write to DB.
+        data_types: List of data types to ingest (e.g. ["daily_summary", "activities"]).
+                    If None, all types are ingested.
 
     Returns:
         Dict with ingestion results per data type.
@@ -67,32 +166,84 @@ def run_ingestion(
     client = GarminClient(garmin)
     results: dict = {}
 
-    current_date = start_date
-    rows = 0
-    errors = 0
+    ingest_daily = data_types is None or "daily_summary" in data_types
+    ingest_activities = data_types is None or "activities" in data_types
 
-    while current_date <= end_date:
+    # Daily summary ingestion
+    if ingest_daily:
+        current_date = start_date
+        rows = 0
+        errors = 0
+
+        while current_date <= end_date:
+            try:
+                raw = client.get_daily_summary(current_date.isoformat())
+                summary = parse_daily_summary(raw, user.id)
+
+                if not dry_run:
+                    upsert_daily_summary(session, summary)
+                rows += 1
+                logger.debug(
+                    "Ingested daily summary for %s (user %s)",
+                    current_date,
+                    user.garmin_display_name,
+                )
+            except Exception as e:
+                errors += 1
+                logger.warning(
+                    "Failed to fetch daily summary for %s (user %s): %s",
+                    current_date,
+                    user.garmin_display_name,
+                    e,
+                )
+            current_date += timedelta(days=1)
+
+        status = "success" if errors == 0 else ("partial" if rows > 0 else "error")
+        results["daily_summary"] = {"status": status, "rows": rows, "errors": errors}
+
+    # Activity ingestion
+    if ingest_activities:
         try:
-            raw = client.get_daily_summary(current_date.isoformat())
-            summary = parse_daily_summary(raw, user.id)
-
-            if not dry_run:
-                upsert_daily_summary(session, summary)
-            rows += 1
-            logger.debug(
-                "Ingested daily summary for %s (user %s)",
-                current_date,
-                user.garmin_display_name,
+            raw_activities = client.get_activities_by_date(
+                start_date.isoformat(),
+                end_date.isoformat(),
             )
+            act_rows = 0
+            act_errors = 0
+
+            for raw_act in raw_activities:
+                try:
+                    activity = parse_activity(raw_act, user.id)
+
+                    if not dry_run:
+                        upsert_activity(session, activity)
+                        _download_and_store_file(session, client, activity)
+
+                    act_rows += 1
+                    logger.debug(
+                        "Ingested activity %s (%s) for user %s",
+                        activity.activity_id,
+                        activity.activity_type,
+                        user.garmin_display_name,
+                    )
+                except Exception as e:
+                    act_errors += 1
+                    logger.warning(
+                        "Failed to process activity for user %s: %s",
+                        user.garmin_display_name,
+                        e,
+                    )
         except Exception as e:
-            errors += 1
+            act_rows = 0
+            act_errors = 1
             logger.warning(
-                "Failed to fetch daily summary for %s (user %s): %s",
-                current_date,
+                "Failed to fetch activities for user %s: %s",
                 user.garmin_display_name,
                 e,
             )
-        current_date += timedelta(days=1)
+
+        status = "success" if act_errors == 0 else ("partial" if act_rows > 0 else "error")
+        results["activities"] = {"status": status, "rows": act_rows, "errors": act_errors}
 
     if not dry_run:
         save_tokens(session, user, client.garmin)
@@ -100,8 +251,6 @@ def run_ingestion(
         session.add(user)
         session.commit()
 
-    status = "success" if errors == 0 else ("partial" if rows > 0 else "error")
-    results["daily_summary"] = {"status": status, "rows": rows, "errors": errors}
     return results
 
 
@@ -121,16 +270,18 @@ def run_for_all_users(
     days_back: int | None = None,
     user_filter: str | None = None,
     dry_run: bool = False,
+    data_types: list[str] | None = None,
 ) -> list[dict]:
     """Run ingestion for all active users.
 
     Args:
         session: Database session.
         start_date: Explicit start date. If None, calculated from days_back.
-        end_date: Explicit end date. Defaults to today.
+        end_date: Explicit end date. Defaults to yesterday.
         days_back: Number of days to look back. Defaults to config setting.
         user_filter: Optional display name to filter to a single user.
         dry_run: If True, fetch but don't write.
+        data_types: List of data types to ingest. If None, all types.
 
     Returns:
         List of result dicts, one per user.
@@ -159,7 +310,12 @@ def run_for_all_users(
             " (dry run)" if dry_run else "",
         )
         result = run_ingestion(
-            session, user, start_date, end_date, dry_run=dry_run
+            session,
+            user,
+            start_date,
+            end_date,
+            dry_run=dry_run,
+            data_types=data_types,
         )
         all_results.append({
             "user": user.garmin_display_name,
