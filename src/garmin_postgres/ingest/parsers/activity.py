@@ -14,7 +14,8 @@ def parse_activity(raw: dict, user_id: int) -> Activity:
     """Parse a Garmin activity response into an Activity model.
 
     Args:
-        raw: Raw activity dict from get_activities_by_date().
+        raw: Raw activity dict from get_activity() (detailed) or
+             get_activities_by_date() (summary).
              Expected keys: activityId, activityType.typeKey, startTimeGMT.
         user_id: The database user_id to associate with this activity.
 

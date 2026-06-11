@@ -1,4 +1,5 @@
 import logging
+import time
 from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -213,7 +214,22 @@ def run_ingestion(
 
             for raw_act in raw_activities:
                 try:
-                    activity = parse_activity(raw_act, user.id)
+                    activity_id = raw_act.get("activityId")
+                    if activity_id is None:
+                        raise KeyError("activityId missing from activity summary")
+
+                    # Fetch detailed activity data (richer than the list summary)
+                    try:
+                        raw_detail = client.get_activity(str(activity_id))
+                    except Exception as detail_err:
+                        logger.warning(
+                            "Failed to fetch detail for activity %s, using summary: %s",
+                            activity_id,
+                            detail_err,
+                        )
+                        raw_detail = raw_act
+
+                    activity = parse_activity(raw_detail, user.id)
 
                     if not dry_run:
                         upsert_activity(session, activity)
@@ -226,6 +242,9 @@ def run_ingestion(
                         activity.activity_type,
                         user.garmin_display_name,
                     )
+
+                    # Small delay between activity detail fetches to avoid rate limits
+                    time.sleep(1)
                 except Exception as e:
                     act_errors += 1
                     logger.warning(

@@ -49,6 +49,22 @@ class GarminClient:
         logger.debug("Fetching activities from %s to %s", startdate, enddate)
         return self._garmin.get_activities_by_date(startdate, enddate)
 
+    def get_activity(self, activity_id: str) -> dict:
+        """Fetch detailed data for a single activity.
+
+        This hits /activity-service/activity/{id}, which returns significantly
+        richer data than the list endpoint used by get_activities_by_date()
+        (splits/laps, weather, HR zones, training effect, etc.).
+
+        Args:
+            activity_id: Garmin activity ID.
+
+        Returns:
+            Raw API response dict with full activity detail.
+        """
+        logger.debug("Fetching detailed activity %s", activity_id)
+        return self._garmin.get_activity(activity_id)
+
     def download_activity(self, activity_id: str, dl_fmt: str = "original") -> bytes:
         """Download an activity file in the specified format.
 
