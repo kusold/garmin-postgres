@@ -1,3 +1,5 @@
+from pathlib import Path
+import tomllib
 from unittest.mock import MagicMock, patch
 
 from sqlalchemy import select
@@ -199,6 +201,7 @@ def test_auth_status_no_users():
     with (
         patch("garmin_postgres.cli.get_engine"),
         patch("garmin_postgres.cli.Session") as mock_session_cls,
+        patch("garmin_postgres.cli._ensure_db_ready"),
     ):
         mock_session = MagicMock()
         mock_session.__enter__ = MagicMock(return_value=mock_session)
@@ -214,6 +217,76 @@ def test_auth_status_no_users():
     assert "No users found" in result.output
 
 
+def test_auth_status_validates_stored_tokens():
+    from typer.testing import CliRunner
+
+    from garmin_postgres.cli import app
+
+    valid_user = User(
+        garmin_display_name="valid",
+        tokens_json='{"di_token": "valid"}',
+        raw_json={"fullName": "Valid User"},
+    )
+    expired_user = User(
+        garmin_display_name="expired",
+        tokens_json='{"di_token": "expired"}',
+        raw_json={"fullName": "Expired User"},
+    )
+
+    with (
+        patch("garmin_postgres.cli.get_engine"),
+        patch("garmin_postgres.cli.Session") as mock_session_cls,
+        patch("garmin_postgres.cli._ensure_db_ready"),
+        patch("garmin_postgres.auth.refresh_tokens", side_effect=[True, False]) as mock_refresh,
+    ):
+        mock_session = MagicMock()
+        mock_session.__enter__ = MagicMock(return_value=mock_session)
+        mock_session.__exit__ = MagicMock(return_value=False)
+        mock_session_cls.return_value = mock_session
+        mock_session.scalars.return_value.all.return_value = [valid_user, expired_user]
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["auth", "status"])
+
+    assert result.exit_code == 0
+    assert "Valid User: active, tokens valid" in result.output
+    assert "Expired User: inactive, tokens invalid" in result.output
+    assert mock_refresh.call_count == 2
+
+
+def test_ensure_db_ready_uses_cwd_independent_alembic_location(tmp_path, monkeypatch):
+    from garmin_postgres.cli import _ensure_db_ready
+
+    engine = MagicMock()
+    engine.url = "postgresql://example/test"
+
+    with (
+        patch("garmin_postgres.cli.get_engine", return_value=engine),
+        patch("garmin_postgres.cli.Session") as mock_session_cls,
+        patch("alembic.command.upgrade") as mock_upgrade,
+    ):
+        mock_session = MagicMock()
+        mock_session.__enter__ = MagicMock(return_value=mock_session)
+        mock_session.__exit__ = MagicMock(return_value=False)
+        mock_session_cls.return_value = mock_session
+
+        monkeypatch.chdir(tmp_path)
+        _ensure_db_ready()
+
+    alembic_cfg = mock_upgrade.call_args.args[0]
+    script_location = Path(alembic_cfg.get_main_option("script_location"))
+    assert script_location.is_absolute()
+    assert script_location.name == "alembic"
+    assert script_location.exists()
+
+
+def test_pyproject_packages_alembic_migrations():
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text())
+    force_include = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
+
+    assert force_include["alembic"] == "garmin_postgres/alembic"
+
+
 def test_auth_login():
     from typer.testing import CliRunner
 
@@ -225,6 +298,7 @@ def test_auth_login():
         patch("garmin_postgres.auth.login_interactive", return_value=mock_garmin) as mock_login,
         patch("garmin_postgres.auth.upsert_user") as mock_upsert,
         patch("garmin_postgres.cli.get_engine"),
+        patch("garmin_postgres.cli._ensure_db_ready"),
     ):
         mock_upsert.return_value = MagicMock(garmin_display_name="clinew", raw_json=None)
         # Patch the Session used inside the login command so it doesn't need a real DB

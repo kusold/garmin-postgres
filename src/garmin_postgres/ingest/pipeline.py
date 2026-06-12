@@ -312,7 +312,7 @@ def run_for_all_users(
         if days_back is None:
             settings = get_settings()
             days_back = settings.ingest_days_back
-        start_date = end_date - timedelta(days=days_back)
+        start_date = end_date - timedelta(days=days_back - 1)
 
     users = get_active_users(session, user_filter)
     if not users:

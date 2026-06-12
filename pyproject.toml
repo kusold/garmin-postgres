@@ -29,6 +29,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/garmin_postgres"]
 
+[tool.hatch.build.targets.wheel.force-include]
+alembic = "garmin_postgres/alembic"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --tb=short"

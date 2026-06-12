@@ -2,6 +2,7 @@ from datetime import date, datetime, timezone
 
 from sqlalchemy import select
 
+import garmin_postgres.ingest.pipeline as pipeline
 from garmin_postgres.ingest.pipeline import upsert_activity, upsert_activity_file, upsert_daily_summary
 from garmin_postgres.models.activity import Activity
 from garmin_postgres.models.activity_file import ActivityFile
@@ -285,3 +286,55 @@ class TestUpsertActivityFile:
         ).all()
         assert len(results) == 3
         assert {r.file_format for r in results} == {"fit", "gpx", "tcx"}
+
+
+class TestRunForAllUsersDateRange:
+    def test_days_back_one_fetches_one_day_ending_yesterday(self, monkeypatch):
+        class FixedDate(date):
+            @classmethod
+            def today(cls):
+                return cls(2026, 6, 12)
+
+        user = User(garmin_display_name="testuser", is_active=True)
+        calls = []
+
+        def fake_run_ingestion(
+            session, user, start_date, end_date, *, dry_run=False, data_types=None
+        ):
+            calls.append((start_date, end_date))
+            return {"daily_summary": {"status": "success", "rows": 0, "errors": 0}}
+
+        monkeypatch.setattr(pipeline, "date", FixedDate)
+        monkeypatch.setattr(
+            pipeline, "get_active_users", lambda session, user_filter=None: [user]
+        )
+        monkeypatch.setattr(pipeline, "run_ingestion", fake_run_ingestion)
+
+        pipeline.run_for_all_users(object(), days_back=1)
+
+        assert calls == [(date(2026, 6, 11), date(2026, 6, 11))]
+
+    def test_days_back_fetches_exact_inclusive_day_count_with_explicit_end_date(self, monkeypatch):
+        user = User(garmin_display_name="testuser", is_active=True)
+        calls = []
+
+        def fake_run_ingestion(
+            session, user, start_date, end_date, *, dry_run=False, data_types=None
+        ):
+            calls.append((start_date, end_date))
+            return {"daily_summary": {"status": "success", "rows": 0, "errors": 0}}
+
+        monkeypatch.setattr(
+            pipeline, "get_active_users", lambda session, user_filter=None: [user]
+        )
+        monkeypatch.setattr(pipeline, "run_ingestion", fake_run_ingestion)
+
+        pipeline.run_for_all_users(
+            object(),
+            end_date=date(2026, 6, 11),
+            days_back=7,
+        )
+
+        start_date, end_date = calls[0]
+        assert (end_date - start_date).days + 1 == 7
+        assert calls == [(date(2026, 6, 5), date(2026, 6, 11))]

@@ -1,4 +1,7 @@
+from contextlib import nullcontext
 from datetime import date, timedelta
+from importlib.resources import as_file, files
+from pathlib import Path
 
 import typer
 from sqlalchemy import select
@@ -12,6 +15,18 @@ auth_app = typer.Typer(name="auth", help="Authentication commands.")
 ingest_app = typer.Typer(name="ingest", help="Data ingestion commands.")
 app.add_typer(auth_app, name="auth")
 app.add_typer(ingest_app, name="ingest")
+
+
+def _alembic_script_location():
+    packaged_location = files("garmin_postgres").joinpath("alembic")
+    if packaged_location.is_dir():
+        return packaged_location
+
+    source_tree_location = Path(__file__).resolve().parents[2] / "alembic"
+    if source_tree_location.is_dir():
+        return source_tree_location
+
+    raise FileNotFoundError("Could not find packaged or source-tree Alembic migrations")
 
 
 def _ensure_db_ready() -> None:
@@ -28,8 +43,15 @@ def _ensure_db_ready() -> None:
 
     alembic_cfg = Config()
     alembic_cfg.set_main_option("sqlalchemy.url", str(engine.url))
-    alembic_cfg.set_main_option("script_location", "alembic")
-    command.upgrade(alembic_cfg, "head")
+    script_location = _alembic_script_location()
+    script_location_context = (
+        nullcontext(script_location)
+        if isinstance(script_location, Path)
+        else as_file(script_location)
+    )
+    with script_location_context as location:
+        alembic_cfg.set_main_option("script_location", str(location))
+        command.upgrade(alembic_cfg, "head")
 
 
 @app.callback()
@@ -70,11 +92,12 @@ def status() -> None:
 
         for user in users:
             name = user.raw_json.get("fullName", user.garmin_display_name) if user.raw_json else user.garmin_display_name
-            active = "active" if user.is_active else "inactive"
-            has_tokens = "present" if user.tokens_json else "missing"
+            tokens_valid = refresh_tokens(session, user) if user.tokens_json else False
+            active = "active" if user.is_active and tokens_valid else "inactive"
+            token_status = "valid" if tokens_valid else ("missing" if not user.tokens_json else "invalid")
             last_ingest = str(user.last_ingest_at) if user.last_ingest_at else "never"
             typer.echo(
-                f"  {name}: {active}, tokens {has_tokens}, "
+                f"  {name}: {active}, tokens {token_status}, "
                 f"last ingest: {last_ingest}"
             )
 
