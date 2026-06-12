@@ -70,7 +70,7 @@ def upsert_activity(session: Session, activity: Activity) -> Activity:
     session.flush()
 
     # Refresh to get the DB-assigned id (local PK) for FK references
-    existing = session.exec(
+    existing = session.scalars(
         select(Activity).where(
             Activity.user_id == activity.user_id,
             Activity.activity_id == activity.activity_id,

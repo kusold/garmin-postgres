@@ -1,10 +1,17 @@
 import os
 
+# Point docker library at rootless Podman socket if DOCKER_HOST isn't set
+if "DOCKER_HOST" not in os.environ:
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    podman_sock = os.path.join(runtime_dir, "podman", "podman.sock")
+    if os.path.exists(podman_sock):
+        os.environ["DOCKER_HOST"] = f"unix://{podman_sock}"
+
 import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
-from sqlalchemy.orm import Session
+from sqlmodel import Session
 from testcontainers.postgres import PostgresContainer
 
 

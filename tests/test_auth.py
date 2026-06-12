@@ -22,7 +22,7 @@ def _make_mock_garmin(
     garmin.display_name = display_name
     garmin.full_name = full_name
     garmin.client.dumps.return_value = tokens_json
-    garmin.get_user_profile.return_value = profile or {
+    garmin.client.connectapi.return_value = profile or {
         "displayName": display_name,
         "fullName": full_name,
     }
@@ -226,7 +226,7 @@ def test_auth_login():
         patch("garmin_postgres.auth.upsert_user") as mock_upsert,
         patch("garmin_postgres.cli.get_engine"),
     ):
-        mock_upsert.return_value = MagicMock(garmin_display_name="clinew")
+        mock_upsert.return_value = MagicMock(garmin_display_name="clinew", raw_json=None)
         # Patch the Session used inside the login command so it doesn't need a real DB
         with patch("garmin_postgres.cli.Session") as mock_session_cls:
             mock_session = MagicMock()
