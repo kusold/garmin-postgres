@@ -11,16 +11,20 @@ from garmin_postgres.config import get_settings
 from garmin_postgres.ingest.client import GarminClient
 from garmin_postgres.ingest.parsers.activity import parse_activity
 from garmin_postgres.ingest.parsers.daily_summary import parse_daily_summary
+from garmin_postgres.ingest.parsers.personal_record import parse_personal_records
 from garmin_postgres.models.activity import Activity
 from garmin_postgres.models.activity_detail import ActivityDetail
 from garmin_postgres.models.activity_file import ActivityFile
 from garmin_postgres.models.daily_summary import DailySummary
+from garmin_postgres.models.personal_record import PersonalRecord
 from garmin_postgres.models.user import User
 
 logger = logging.getLogger(__name__)
 
 ACTIVITY_DETAIL_MAX_CHART_SIZE = 2000
 ACTIVITY_DETAIL_MAX_POLYLINE_SIZE = 4000
+
+DEFAULT_DATA_TYPES = ["daily_summary", "activities", "personal_records"]
 
 
 def upsert_daily_summary(session: Session, summary: DailySummary) -> DailySummary:
@@ -173,6 +177,35 @@ def _fetch_and_store_activity_detail(
         return False
 
 
+def upsert_personal_record(session: Session, personal_record: PersonalRecord) -> PersonalRecord:
+    """Insert or update a personal record row using ON CONFLICT DO UPDATE.
+
+    The unique key is (user_id, type_id, record_date, value_text). On conflict,
+    update activity_type and raw_json.
+    """
+    data = {
+        "user_id": personal_record.user_id,
+        "type_id": personal_record.type_id,
+        "record_date": personal_record.record_date,
+        "activity_type": personal_record.activity_type,
+        "value_text": personal_record.value_text,
+        "raw_json": personal_record.raw_json,
+    }
+
+    stmt = insert(PersonalRecord).values(**data)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["user_id", "type_id", "record_date", "value_text"],
+        set_={
+            "activity_type": stmt.excluded.activity_type,
+            "value_text": stmt.excluded.value_text,
+            "raw_json": stmt.excluded.raw_json,
+        },
+    )
+    session.execute(stmt)
+    session.flush()
+    return personal_record
+
+
 def _download_and_store_file(
     session: Session,
     client: GarminClient,
@@ -225,16 +258,21 @@ def run_ingestion(
     Returns:
         Dict with ingestion results per data type.
     """
+    selected_data_types = DEFAULT_DATA_TYPES if data_types is None else data_types
     garmin = load_user_client(session, user)
     if garmin is None:
         logger.error("Failed to load client for user %s", user.garmin_display_name)
-        return {"daily_summary": {"status": "error", "error": "Failed to load tokens"}}
+        return {
+            data_type: {"status": "error", "error": "Failed to load tokens"}
+            for data_type in selected_data_types
+        }
 
     client = GarminClient(garmin)
     results: dict = {}
 
-    ingest_daily = data_types is None or "daily_summary" in data_types
-    ingest_activities = data_types is None or "activities" in data_types
+    ingest_daily = "daily_summary" in selected_data_types
+    ingest_activities = "activities" in selected_data_types
+    ingest_personal_records = "personal_records" in selected_data_types
 
     # Daily summary ingestion
     if ingest_daily:
@@ -348,6 +386,42 @@ def run_ingestion(
             "errors": act_errors,
             "detail_rows": detail_rows,
             "detail_errors": detail_errors,
+        }
+
+    # Personal record ingestion. Garmin returns a current snapshot; preserve
+    # each distinct PR event by upserting on record identity.
+    if ingest_personal_records:
+        pr_rows = 0
+        pr_errors = 0
+        try:
+            raw_records = client.get_personal_records()
+            personal_records = parse_personal_records(raw_records, user.id)
+
+            for personal_record in personal_records:
+                try:
+                    if not dry_run:
+                        upsert_personal_record(session, personal_record)
+                    pr_rows += 1
+                except Exception as e:
+                    pr_errors += 1
+                    logger.warning(
+                        "Failed to process personal record for user %s: %s",
+                        user.garmin_display_name,
+                        e,
+                    )
+        except Exception as e:
+            pr_errors = 1
+            logger.warning(
+                "Failed to fetch personal records for user %s: %s",
+                user.garmin_display_name,
+                e,
+            )
+
+        status = "success" if pr_errors == 0 else ("partial" if pr_rows > 0 else "error")
+        results["personal_records"] = {
+            "status": status,
+            "rows": pr_rows,
+            "errors": pr_errors,
         }
 
     if not dry_run:

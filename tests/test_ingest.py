@@ -8,11 +8,13 @@ from garmin_postgres.ingest.pipeline import (
     upsert_activity_detail,
     upsert_activity_file,
     upsert_daily_summary,
+    upsert_personal_record,
 )
 from garmin_postgres.models.activity import Activity
 from garmin_postgres.models.activity_detail import ActivityDetail
 from garmin_postgres.models.activity_file import ActivityFile
 from garmin_postgres.models.daily_summary import DailySummary
+from garmin_postgres.models.personal_record import PersonalRecord
 from garmin_postgres.models.user import User
 
 
@@ -521,6 +523,117 @@ class TestRunIngestionActivityDetails:
         }
 
 
+class TestUpsertPersonalRecord:
+    def test_insert_new_record(self, session):
+        user = _create_user(session)
+        record = PersonalRecord(
+            user_id=user.id,
+            type_id=3,
+            record_date=date(2026, 6, 1),
+            activity_type="running",
+            value_text="00:22:14",
+            raw_json={"typeId": 3, "value": "00:22:14"},
+        )
+
+        upsert_personal_record(session, record)
+
+        result = session.scalars(
+            select(PersonalRecord).where(
+                PersonalRecord.user_id == user.id,
+                PersonalRecord.type_id == 3,
+            )
+        ).first()
+        assert result is not None
+        assert result.activity_type == "running"
+        assert result.raw_json["value"] == "00:22:14"
+
+    def test_upsert_updates_existing(self, session):
+        user = _create_user(session)
+        record_v1 = PersonalRecord(
+            user_id=user.id,
+            type_id=3,
+            record_date=date(2026, 6, 1),
+            activity_type="running",
+            value_text="00:22:14",
+            raw_json={"typeId": 3, "value": "00:22:14", "version": 1},
+        )
+        upsert_personal_record(session, record_v1)
+
+        record_v2 = PersonalRecord(
+            user_id=user.id,
+            type_id=3,
+            record_date=date(2026, 6, 1),
+            activity_type="trail_running",
+            value_text="00:22:14",
+            raw_json={"typeId": 3, "value": "00:22:14", "version": 2},
+        )
+        upsert_personal_record(session, record_v2)
+
+        results = session.scalars(
+            select(PersonalRecord).where(
+                PersonalRecord.user_id == user.id,
+                PersonalRecord.type_id == 3,
+            )
+        ).all()
+        assert len(results) == 1
+        assert results[0].activity_type == "trail_running"
+        assert results[0].raw_json["version"] == 2
+
+    def test_different_users_same_record_identity(self, session):
+        user1 = _create_user(session)
+        user2 = User(garmin_display_name="testuser2", is_active=True)
+        session.add(user2)
+        session.flush()
+
+        for user in [user1, user2]:
+            record = PersonalRecord(
+                user_id=user.id,
+                type_id=3,
+                record_date=date(2026, 6, 1),
+                activity_type="running",
+                value_text="00:22:14",
+                raw_json={"typeId": 3, "user": user.garmin_display_name},
+            )
+            upsert_personal_record(session, record)
+
+        results = session.scalars(
+            select(PersonalRecord).where(PersonalRecord.type_id == 3)
+        ).all()
+        assert len(results) == 2
+
+    def test_preserves_history_for_same_type_when_date_or_value_differs(self, session):
+        user = _create_user(session)
+        records = [
+            PersonalRecord(
+                user_id=user.id,
+                type_id=3,
+                record_date=date(2026, 6, 1),
+                activity_type="running",
+                value_text="00:22:14",
+                raw_json={"typeId": 3, "value": "00:22:14"},
+            ),
+            PersonalRecord(
+                user_id=user.id,
+                type_id=3,
+                record_date=date(2026, 7, 1),
+                activity_type="running",
+                value_text="00:21:45",
+                raw_json={"typeId": 3, "value": "00:21:45"},
+            ),
+        ]
+
+        for record in records:
+            upsert_personal_record(session, record)
+
+        results = session.scalars(
+            select(PersonalRecord).where(
+                PersonalRecord.user_id == user.id,
+                PersonalRecord.type_id == 3,
+            )
+        ).all()
+        assert len(results) == 2
+
+
 class TestRunForAllUsersDateRange:
     def test_days_back_one_fetches_one_day_ending_yesterday(self, monkeypatch):
         class FixedDate(date):
@@ -571,3 +684,132 @@ class TestRunForAllUsersDateRange:
         start_date, end_date = calls[0]
         assert (end_date - start_date).days + 1 == 7
         assert calls == [(date(2026, 6, 5), date(2026, 6, 11))]
+
+
+class FakeGarminClient:
+    def __init__(self, *, personal_records=None, personal_error=None):
+        self.garmin = object()
+        self.personal_records = personal_records or []
+        self.personal_error = personal_error
+        self.calls = []
+
+    def get_daily_summary(self, cdate):
+        self.calls.append(("daily_summary", cdate))
+        return {"calendarDate": cdate, "totalSteps": 1234}
+
+    def get_activities_by_date(self, startdate, enddate):
+        self.calls.append(("activities", startdate, enddate))
+        return []
+
+    def get_personal_records(self):
+        self.calls.append(("personal_records",))
+        if self.personal_error:
+            raise self.personal_error
+        return self.personal_records
+
+
+class TestRunIngestionPersonalRecords:
+    def test_default_ingestion_includes_personal_records(self, session, monkeypatch):
+        user = _create_user(session)
+        fake_client = FakeGarminClient(
+            personal_records=[
+                {
+                    "typeId": 3,
+                    "value": "00:22:14",
+                    "prStartTimeGmtFormatted": "2026-06-01 12:30:00",
+                }
+            ]
+        )
+        monkeypatch.setattr(pipeline, "load_user_client", lambda session, user: object())
+        monkeypatch.setattr(pipeline, "GarminClient", lambda garmin: fake_client)
+        monkeypatch.setattr(pipeline, "save_tokens", lambda session, user, garmin: None)
+
+        result = pipeline.run_ingestion(
+            session,
+            user,
+            date(2026, 6, 1),
+            date(2026, 6, 1),
+        )
+
+        assert result["personal_records"] == {
+            "status": "success",
+            "rows": 1,
+            "errors": 0,
+        }
+        assert ("personal_records",) in fake_client.calls
+
+    def test_personal_records_data_type_fetches_only_personal_records(self, session, monkeypatch):
+        user = _create_user(session)
+        fake_client = FakeGarminClient(
+            personal_records=[
+                {
+                    "typeId": 7,
+                    "value": "42195",
+                    "prStartTimeGmtFormatted": "2026-06-02",
+                }
+            ]
+        )
+        monkeypatch.setattr(pipeline, "load_user_client", lambda session, user: object())
+        monkeypatch.setattr(pipeline, "GarminClient", lambda garmin: fake_client)
+        monkeypatch.setattr(pipeline, "save_tokens", lambda session, user, garmin: None)
+
+        result = pipeline.run_ingestion(
+            session,
+            user,
+            date(2026, 6, 1),
+            date(2026, 6, 1),
+            data_types=["personal_records"],
+        )
+
+        assert set(result) == {"personal_records"}
+        assert result["personal_records"]["rows"] == 1
+        assert fake_client.calls == [("personal_records",)]
+
+    def test_personal_records_dry_run_counts_without_writing(self, session, monkeypatch):
+        user = _create_user(session)
+        fake_client = FakeGarminClient(
+            personal_records=[
+                {
+                    "typeId": 3,
+                    "value": "00:22:14",
+                    "prStartTimeGmtFormatted": "2026-06-01",
+                }
+            ]
+        )
+        monkeypatch.setattr(pipeline, "load_user_client", lambda session, user: object())
+        monkeypatch.setattr(pipeline, "GarminClient", lambda garmin: fake_client)
+
+        result = pipeline.run_ingestion(
+            session,
+            user,
+            date(2026, 6, 1),
+            date(2026, 6, 1),
+            dry_run=True,
+            data_types=["personal_records"],
+        )
+
+        records = session.scalars(select(PersonalRecord)).all()
+        assert result["personal_records"]["rows"] == 1
+        assert records == []
+
+    def test_personal_record_errors_do_not_prevent_other_data_types(self, session, monkeypatch):
+        user = _create_user(session)
+        fake_client = FakeGarminClient(personal_error=RuntimeError("garmin unavailable"))
+        monkeypatch.setattr(pipeline, "load_user_client", lambda session, user: object())
+        monkeypatch.setattr(pipeline, "GarminClient", lambda garmin: fake_client)
+        monkeypatch.setattr(pipeline, "save_tokens", lambda session, user, garmin: None)
+
+        result = pipeline.run_ingestion(
+            session,
+            user,
+            date(2026, 6, 1),
+            date(2026, 6, 1),
+        )
+
+        assert result["daily_summary"]["status"] == "success"
+        assert result["activities"]["status"] == "success"
+        assert result["personal_records"] == {
+            "status": "error",
+            "rows": 0,
+            "errors": 1,
+        }

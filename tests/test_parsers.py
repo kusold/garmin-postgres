@@ -1,9 +1,13 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import pytest
 
 from garmin_postgres.ingest.parsers.activity import parse_activity
 from garmin_postgres.ingest.parsers.daily_summary import parse_daily_summary
+from garmin_postgres.ingest.parsers.personal_record import (
+    parse_personal_record,
+    parse_personal_records,
+)
 
 
 SAMPLE_SUMMARY = {
@@ -145,3 +149,70 @@ class TestParseActivity:
         assert result.activity_type is None
         assert result.start_time is None
         assert result.raw_json == raw
+
+
+SAMPLE_PERSONAL_RECORD = {
+    "typeId": 3,
+    "value": "00:22:14",
+    "prStartTimeGmtFormatted": "2026-06-01 12:30:00",
+    "activityType": {"typeKey": "running", "typeId": 1},
+    "activityId": 16204035614,
+}
+
+
+class TestParsePersonalRecord:
+    def test_parses_valid_response(self):
+        result = parse_personal_record(SAMPLE_PERSONAL_RECORD, user_id=1)
+
+        assert result.user_id == 1
+        assert result.type_id == 3
+        assert result.record_date == date(2026, 6, 1)
+        assert result.activity_type == "running"
+        assert result.value_text == "00:22:14"
+        assert result.raw_json == SAMPLE_PERSONAL_RECORD
+        assert result.id is None
+
+    def test_parses_iso_timestamp_date_component(self):
+        raw = {
+            **SAMPLE_PERSONAL_RECORD,
+            "prStartTimeGmtFormatted": "2026-06-02T12:30:00.000Z",
+        }
+
+        result = parse_personal_record(raw, user_id=1)
+
+        assert result.record_date == date(2026, 6, 2)
+
+    def test_minimal_response_only_type_id(self):
+        raw = {"typeId": 16}
+
+        result = parse_personal_record(raw, user_id=1)
+
+        assert result.type_id == 16
+        assert result.record_date is None
+        assert result.activity_type is None
+        assert result.value_text is None
+        assert result.raw_json == raw
+
+    def test_missing_type_id_raises_key_error(self):
+        raw = {k: v for k, v in SAMPLE_PERSONAL_RECORD.items() if k != "typeId"}
+
+        with pytest.raises(KeyError):
+            parse_personal_record(raw, user_id=1)
+
+    def test_activity_type_string_is_preserved(self):
+        raw = {**SAMPLE_PERSONAL_RECORD, "activityType": "cycling"}
+
+        result = parse_personal_record(raw, user_id=1)
+
+        assert result.activity_type == "cycling"
+
+    def test_parse_personal_records_list(self):
+        raw_records = [
+            SAMPLE_PERSONAL_RECORD,
+            {**SAMPLE_PERSONAL_RECORD, "typeId": 4, "value": "00:47:30"},
+        ]
+
+        results = parse_personal_records(raw_records, user_id=42)
+
+        assert [result.type_id for result in results] == [3, 4]
+        assert {result.user_id for result in results} == {42}

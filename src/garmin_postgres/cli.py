@@ -106,7 +106,7 @@ def status() -> None:
 def run(
     user: str = typer.Option(None, "--user", "-u", help="Only ingest for this display name"),
     days_back: int = typer.Option(None, "--days-back", "-d", help="Days to look back (default: from config)"),
-    data_type: list[str] = typer.Option(None, "--data-type", "-t", help="Data types to ingest (daily_summary, activities)"),
+    data_type: list[str] = typer.Option(None, "--data-type", "-t", help="Data types to ingest (daily_summary, activities, personal_records)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Fetch data but don't write to DB"),
 ) -> None:
     """Run incremental ingestion for all active users."""
@@ -140,7 +140,7 @@ def backfill(
     days: int = typer.Option(365, "--days", "-d", help="Number of days to backfill"),
     start_date: str = typer.Option(None, "--start-date", help="Explicit start date (YYYY-MM-DD)"),
     end_date: str = typer.Option(None, "--end-date", help="Explicit end date (YYYY-MM-DD)"),
-    data_type: list[str] = typer.Option(None, "--data-type", "-t", help="Data types to ingest (daily_summary, activities)"),
+    data_type: list[str] = typer.Option(None, "--data-type", "-t", help="Data types to ingest (daily_summary, activities, personal_records)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Fetch data but don't write to DB"),
 ) -> None:
     """Run historical backfill for all active users."""

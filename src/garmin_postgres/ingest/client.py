@@ -106,3 +106,15 @@ class GarminClient:
         fmt_enum = fmt_map.get(dl_fmt, Garmin.ActivityDownloadFormat.ORIGINAL)
         logger.debug("Downloading activity %s in %s format", activity_id, dl_fmt)
         return self._garmin.download_activity(activity_id, dl_fmt=fmt_enum)
+
+    def get_personal_records(self) -> list[dict]:
+        """Fetch personal records for the current user.
+
+        Garmin computes these server-side; this is a current snapshot of the
+        user's known PRs.
+
+        Returns:
+            List of raw personal record dicts.
+        """
+        logger.debug("Fetching personal records")
+        return self._garmin.get_personal_record()
