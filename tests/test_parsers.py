@@ -182,16 +182,23 @@ class TestParsePersonalRecord:
 
         assert result.record_date == date(2026, 6, 2)
 
-    def test_minimal_response_only_type_id(self):
+    def test_missing_record_date_raises_key_error(self):
         raw = {"typeId": 16}
 
-        result = parse_personal_record(raw, user_id=1)
+        with pytest.raises(KeyError):
+            parse_personal_record(raw, user_id=1)
 
-        assert result.type_id == 16
-        assert result.record_date is None
-        assert result.activity_type is None
-        assert result.value_text is None
-        assert result.raw_json == raw
+    def test_missing_value_raises_key_error(self):
+        raw = {k: v for k, v in SAMPLE_PERSONAL_RECORD.items() if k != "value"}
+
+        with pytest.raises(KeyError):
+            parse_personal_record(raw, user_id=1)
+
+    def test_empty_value_raises_value_error(self):
+        raw = {**SAMPLE_PERSONAL_RECORD, "value": None}
+
+        with pytest.raises(ValueError):
+            parse_personal_record(raw, user_id=1)
 
     def test_missing_type_id_raises_key_error(self):
         raw = {k: v for k, v in SAMPLE_PERSONAL_RECORD.items() if k != "typeId"}
