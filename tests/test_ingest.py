@@ -3,8 +3,14 @@ from datetime import date, datetime, timezone
 from sqlalchemy import select
 
 import garmin_postgres.ingest.pipeline as pipeline
-from garmin_postgres.ingest.pipeline import upsert_activity, upsert_activity_file, upsert_daily_summary
+from garmin_postgres.ingest.pipeline import (
+    upsert_activity,
+    upsert_activity_detail,
+    upsert_activity_file,
+    upsert_daily_summary,
+)
 from garmin_postgres.models.activity import Activity
+from garmin_postgres.models.activity_detail import ActivityDetail
 from garmin_postgres.models.activity_file import ActivityFile
 from garmin_postgres.models.daily_summary import DailySummary
 from garmin_postgres.models.user import User
@@ -286,6 +292,233 @@ class TestUpsertActivityFile:
         ).all()
         assert len(results) == 3
         assert {r.file_format for r in results} == {"fit", "gpx", "tcx"}
+
+
+class TestUpsertActivityDetail:
+    def test_insert_new_detail(self, session):
+        user = _create_user(session)
+        activity = _create_activity(session, user.id, activity_id=9001)
+
+        detail = ActivityDetail(
+            activity_id=activity.id,
+            max_chart_size=2000,
+            max_polyline_size=4000,
+            raw_json={"activityId": 9001, "activityDetailMetrics": [{"metric": "hr"}]},
+        )
+        upsert_activity_detail(session, detail)
+
+        result = session.scalars(
+            select(ActivityDetail).where(ActivityDetail.activity_id == activity.id)
+        ).first()
+        assert result is not None
+        assert result.max_chart_size == 2000
+        assert result.max_polyline_size == 4000
+        assert result.raw_json["activityDetailMetrics"][0]["metric"] == "hr"
+
+    def test_upsert_updates_existing_detail(self, session):
+        user = _create_user(session)
+        activity = _create_activity(session, user.id, activity_id=9002)
+
+        detail_v1 = ActivityDetail(
+            activity_id=activity.id,
+            max_chart_size=2000,
+            max_polyline_size=4000,
+            raw_json={"version": 1},
+        )
+        upsert_activity_detail(session, detail_v1)
+
+        detail_v2 = ActivityDetail(
+            activity_id=activity.id,
+            max_chart_size=1000,
+            max_polyline_size=3000,
+            raw_json={"version": 2},
+        )
+        upsert_activity_detail(session, detail_v2)
+
+        results = session.scalars(
+            select(ActivityDetail).where(ActivityDetail.activity_id == activity.id)
+        ).all()
+        assert len(results) == 1
+        assert results[0].max_chart_size == 1000
+        assert results[0].max_polyline_size == 3000
+        assert results[0].raw_json["version"] == 2
+
+    def test_different_activities_get_separate_details(self, session):
+        user = _create_user(session)
+        activity1 = _create_activity(session, user.id, activity_id=9003)
+        activity2 = _create_activity(session, user.id, activity_id=9004)
+
+        for activity in [activity1, activity2]:
+            detail = ActivityDetail(
+                activity_id=activity.id,
+                max_chart_size=2000,
+                max_polyline_size=4000,
+                raw_json={"activityId": activity.activity_id},
+            )
+            upsert_activity_detail(session, detail)
+
+        results = session.scalars(select(ActivityDetail)).all()
+        assert len(results) == 2
+        assert {r.raw_json["activityId"] for r in results} == {9003, 9004}
+
+
+class TestRunIngestionActivityDetails:
+    def test_fetches_and_stores_activity_details_after_activity_upsert(self, session, monkeypatch):
+        user = _create_user(session)
+        calls = []
+
+        class FakeGarminClient:
+            def __init__(self, garmin):
+                self.garmin = garmin
+
+            def get_activities_by_date(self, startdate, enddate):
+                return [{"activityId": 10001}]
+
+            def get_activity(self, activity_id):
+                calls.append(("summary", activity_id))
+                return {
+                    "activityId": int(activity_id),
+                    "activityType": {"typeKey": "running"},
+                    "startTimeGMT": "2026-06-01 12:30:00",
+                }
+
+            def get_activity_details(self, activity_id, maxchart=2000, maxpoly=4000):
+                stored = session.scalars(
+                    select(Activity).where(Activity.activity_id == int(activity_id))
+                ).first()
+                assert stored is not None
+                assert stored.id is not None
+                calls.append(("details", activity_id, maxchart, maxpoly))
+                return {"activityId": int(activity_id), "geoPolyline": {"points": []}}
+
+            def download_activity(self, activity_id):
+                calls.append(("download", activity_id))
+                return b"fit data"
+
+        monkeypatch.setattr(pipeline, "load_user_client", lambda session, user: object())
+        monkeypatch.setattr(pipeline, "GarminClient", FakeGarminClient)
+        monkeypatch.setattr(pipeline, "save_tokens", lambda session, user, garmin: None)
+        monkeypatch.setattr(pipeline.time, "sleep", lambda seconds: None)
+
+        result = pipeline.run_ingestion(
+            session,
+            user,
+            date(2026, 6, 1),
+            date(2026, 6, 1),
+            data_types=["activities"],
+        )
+
+        detail = session.scalars(select(ActivityDetail)).one()
+        assert detail.raw_json["geoPolyline"]["points"] == []
+        assert detail.max_chart_size == 2000
+        assert detail.max_polyline_size == 4000
+        assert result["activities"] == {
+            "status": "success",
+            "rows": 1,
+            "errors": 0,
+            "detail_rows": 1,
+            "detail_errors": 0,
+        }
+        assert calls == [
+            ("summary", "10001"),
+            ("details", "10001", 2000, 4000),
+            ("download", "10001"),
+        ]
+
+    def test_detail_failure_does_not_prevent_activity_storage(self, session, monkeypatch):
+        user = _create_user(session)
+
+        class FakeGarminClient:
+            def __init__(self, garmin):
+                self.garmin = garmin
+
+            def get_activities_by_date(self, startdate, enddate):
+                return [{"activityId": 10002}]
+
+            def get_activity(self, activity_id):
+                return {
+                    "activityId": int(activity_id),
+                    "activityType": {"typeKey": "cycling"},
+                    "startTimeGMT": "2026-06-01 13:30:00",
+                }
+
+            def get_activity_details(self, activity_id, maxchart=2000, maxpoly=4000):
+                raise RuntimeError("details unavailable")
+
+            def download_activity(self, activity_id):
+                return b"fit data"
+
+        monkeypatch.setattr(pipeline, "load_user_client", lambda session, user: object())
+        monkeypatch.setattr(pipeline, "GarminClient", FakeGarminClient)
+        monkeypatch.setattr(pipeline, "save_tokens", lambda session, user, garmin: None)
+        monkeypatch.setattr(pipeline.time, "sleep", lambda seconds: None)
+
+        result = pipeline.run_ingestion(
+            session,
+            user,
+            date(2026, 6, 1),
+            date(2026, 6, 1),
+            data_types=["activities"],
+        )
+
+        activity = session.scalars(
+            select(Activity).where(Activity.activity_id == 10002)
+        ).first()
+        details = session.scalars(select(ActivityDetail)).all()
+        assert activity is not None
+        assert details == []
+        assert result["activities"] == {
+            "status": "success",
+            "rows": 1,
+            "errors": 0,
+            "detail_rows": 0,
+            "detail_errors": 1,
+        }
+
+    def test_dry_run_fetches_details_without_writing_rows(self, session, monkeypatch):
+        user = _create_user(session)
+        calls = []
+
+        class FakeGarminClient:
+            def __init__(self, garmin):
+                self.garmin = garmin
+
+            def get_activities_by_date(self, startdate, enddate):
+                return [{"activityId": 10003}]
+
+            def get_activity(self, activity_id):
+                return {"activityId": int(activity_id)}
+
+            def get_activity_details(self, activity_id, maxchart=2000, maxpoly=4000):
+                calls.append(("details", activity_id, maxchart, maxpoly))
+                return {"activityId": int(activity_id), "activityDetailMetrics": []}
+
+            def download_activity(self, activity_id):
+                raise AssertionError("dry run should not download activity files")
+
+        monkeypatch.setattr(pipeline, "load_user_client", lambda session, user: object())
+        monkeypatch.setattr(pipeline, "GarminClient", FakeGarminClient)
+        monkeypatch.setattr(pipeline.time, "sleep", lambda seconds: None)
+
+        result = pipeline.run_ingestion(
+            session,
+            user,
+            date(2026, 6, 1),
+            date(2026, 6, 1),
+            dry_run=True,
+            data_types=["activities"],
+        )
+
+        assert session.scalars(select(Activity)).all() == []
+        assert session.scalars(select(ActivityDetail)).all() == []
+        assert calls == [("details", "10003", 2000, 4000)]
+        assert result["activities"] == {
+            "status": "success",
+            "rows": 1,
+            "errors": 0,
+            "detail_rows": 1,
+            "detail_errors": 0,
+        }
 
 
 class TestRunForAllUsersDateRange:

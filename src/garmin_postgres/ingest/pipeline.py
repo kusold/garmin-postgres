@@ -12,11 +12,15 @@ from garmin_postgres.ingest.client import GarminClient
 from garmin_postgres.ingest.parsers.activity import parse_activity
 from garmin_postgres.ingest.parsers.daily_summary import parse_daily_summary
 from garmin_postgres.models.activity import Activity
+from garmin_postgres.models.activity_detail import ActivityDetail
 from garmin_postgres.models.activity_file import ActivityFile
 from garmin_postgres.models.daily_summary import DailySummary
 from garmin_postgres.models.user import User
 
 logger = logging.getLogger(__name__)
+
+ACTIVITY_DETAIL_MAX_CHART_SIZE = 2000
+ACTIVITY_DETAIL_MAX_POLYLINE_SIZE = 4000
 
 
 def upsert_daily_summary(session: Session, summary: DailySummary) -> DailySummary:
@@ -105,6 +109,68 @@ def upsert_activity_file(session: Session, activity_file: ActivityFile) -> Activ
     session.execute(stmt)
     session.flush()
     return activity_file
+
+
+def upsert_activity_detail(session: Session, activity_detail: ActivityDetail) -> ActivityDetail:
+    """Insert or update an activity detail row using ON CONFLICT DO UPDATE.
+
+    The unique key is activity_id. On conflict, update sizing columns and raw_json.
+    """
+    data = {
+        "activity_id": activity_detail.activity_id,
+        "max_chart_size": activity_detail.max_chart_size,
+        "max_polyline_size": activity_detail.max_polyline_size,
+        "raw_json": activity_detail.raw_json,
+    }
+
+    stmt = insert(ActivityDetail).values(**data)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["activity_id"],
+        set_={
+            "max_chart_size": stmt.excluded.max_chart_size,
+            "max_polyline_size": stmt.excluded.max_polyline_size,
+            "raw_json": stmt.excluded.raw_json,
+        },
+    )
+    session.execute(stmt)
+    session.flush()
+    return activity_detail
+
+
+def _fetch_and_store_activity_detail(
+    session: Session,
+    client: GarminClient,
+    activity: Activity,
+    *,
+    dry_run: bool = False,
+) -> bool:
+    """Fetch and optionally store an activity's chart/polyline details.
+
+    Logs warnings on failure, never raises. Returns True when the details fetch
+    succeeds, regardless of dry_run.
+    """
+    try:
+        raw_detail = client.get_activity_details(
+            str(activity.activity_id),
+            maxchart=ACTIVITY_DETAIL_MAX_CHART_SIZE,
+            maxpoly=ACTIVITY_DETAIL_MAX_POLYLINE_SIZE,
+        )
+        if not dry_run:
+            detail = ActivityDetail(
+                activity_id=activity.id,
+                max_chart_size=ACTIVITY_DETAIL_MAX_CHART_SIZE,
+                max_polyline_size=ACTIVITY_DETAIL_MAX_POLYLINE_SIZE,
+                raw_json=raw_detail,
+            )
+            upsert_activity_detail(session, detail)
+        return True
+    except Exception as e:
+        logger.warning(
+            "Failed to fetch details for activity %s: %s",
+            activity.activity_id,
+            e,
+        )
+        return False
 
 
 def _download_and_store_file(
@@ -211,6 +277,8 @@ def run_ingestion(
             )
             act_rows = 0
             act_errors = 0
+            detail_rows = 0
+            detail_errors = 0
 
             for raw_act in raw_activities:
                 try:
@@ -233,6 +301,16 @@ def run_ingestion(
 
                     if not dry_run:
                         upsert_activity(session, activity)
+                    if _fetch_and_store_activity_detail(
+                        session,
+                        client,
+                        activity,
+                        dry_run=dry_run,
+                    ):
+                        detail_rows += 1
+                    else:
+                        detail_errors += 1
+                    if not dry_run:
                         _download_and_store_file(session, client, activity)
 
                     act_rows += 1
@@ -255,6 +333,8 @@ def run_ingestion(
         except Exception as e:
             act_rows = 0
             act_errors = 1
+            detail_rows = 0
+            detail_errors = 0
             logger.warning(
                 "Failed to fetch activities for user %s: %s",
                 user.garmin_display_name,
@@ -262,7 +342,13 @@ def run_ingestion(
             )
 
         status = "success" if act_errors == 0 else ("partial" if act_rows > 0 else "error")
-        results["activities"] = {"status": status, "rows": act_rows, "errors": act_errors}
+        results["activities"] = {
+            "status": status,
+            "rows": act_rows,
+            "errors": act_errors,
+            "detail_rows": detail_rows,
+            "detail_errors": detail_errors,
+        }
 
     if not dry_run:
         save_tokens(session, user, client.garmin)
