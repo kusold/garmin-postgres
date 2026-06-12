@@ -65,6 +65,29 @@ class GarminClient:
         logger.debug("Fetching detailed activity %s", activity_id)
         return self._garmin.get_activity(activity_id)
 
+    def get_activity_details(
+        self,
+        activity_id: str,
+        maxchart: int = 2000,
+        maxpoly: int = 4000,
+    ) -> dict:
+        """Fetch chart and polyline details for a single activity.
+
+        Args:
+            activity_id: Garmin activity ID.
+            maxchart: Maximum chart data points to request.
+            maxpoly: Maximum polyline points to request.
+
+        Returns:
+            Raw API response dict with chart data and GPS polylines.
+        """
+        logger.debug("Fetching activity details for %s", activity_id)
+        return self._garmin.get_activity_details(
+            activity_id,
+            maxchart=maxchart,
+            maxpoly=maxpoly,
+        )
+
     def download_activity(self, activity_id: str, dl_fmt: str = "original") -> bytes:
         """Download an activity file in the specified format.
 
