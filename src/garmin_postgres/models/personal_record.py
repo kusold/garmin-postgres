@@ -31,17 +31,15 @@ class PersonalRecord(BaseModel, table=True):
         default=None,
         sa_column=Column(Integer, nullable=False),
     )
-    record_date: date | None = Field(
-        default=None,
-        sa_column=Column(Date, nullable=True),
+    record_date: date = Field(
+        sa_column=Column(Date, nullable=False),
     )
     activity_type: str | None = Field(
         default=None,
         sa_column=Column(String, nullable=True),
     )
-    value_text: str | None = Field(
-        default=None,
-        sa_column=Column(String, nullable=True),
+    value_text: str = Field(
+        sa_column=Column(String, nullable=False),
     )
     raw_json: dict | None = Field(
         default=None,
