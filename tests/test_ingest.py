@@ -813,3 +813,39 @@ class TestRunIngestionPersonalRecords:
             "rows": 0,
             "errors": 1,
         }
+
+    def test_malformed_personal_record_does_not_drop_valid_records(self, session, monkeypatch):
+        user = _create_user(session)
+        fake_client = FakeGarminClient(
+            personal_records=[
+                {
+                    "typeId": 3,
+                    "value": "00:22:14",
+                    "prStartTimeGmtFormatted": "2026-06-01",
+                },
+                {
+                    "typeId": 4,
+                    "prStartTimeGmtFormatted": "2026-06-02",
+                },
+            ]
+        )
+        monkeypatch.setattr(pipeline, "load_user_client", lambda session, user: object())
+        monkeypatch.setattr(pipeline, "GarminClient", lambda garmin: fake_client)
+        monkeypatch.setattr(pipeline, "save_tokens", lambda session, user, garmin: None)
+
+        result = pipeline.run_ingestion(
+            session,
+            user,
+            date(2026, 6, 1),
+            date(2026, 6, 1),
+            data_types=["personal_records"],
+        )
+
+        records = session.scalars(select(PersonalRecord)).all()
+        assert result["personal_records"] == {
+            "status": "partial",
+            "rows": 1,
+            "errors": 1,
+        }
+        assert len(records) == 1
+        assert records[0].type_id == 3

@@ -11,7 +11,7 @@ from garmin_postgres.config import get_settings
 from garmin_postgres.ingest.client import GarminClient
 from garmin_postgres.ingest.parsers.activity import parse_activity
 from garmin_postgres.ingest.parsers.daily_summary import parse_daily_summary
-from garmin_postgres.ingest.parsers.personal_record import parse_personal_records
+from garmin_postgres.ingest.parsers.personal_record import parse_personal_record
 from garmin_postgres.models.activity import Activity
 from garmin_postgres.models.activity_detail import ActivityDetail
 from garmin_postgres.models.activity_file import ActivityFile
@@ -395,10 +395,10 @@ def run_ingestion(
         pr_errors = 0
         try:
             raw_records = client.get_personal_records()
-            personal_records = parse_personal_records(raw_records, user.id)
 
-            for personal_record in personal_records:
+            for raw_record in raw_records:
                 try:
+                    personal_record = parse_personal_record(raw_record, user.id)
                     if not dry_run:
                         upsert_personal_record(session, personal_record)
                     pr_rows += 1
