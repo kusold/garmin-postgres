@@ -1,0 +1,24 @@
+[project]
+name = "notion-sync"
+version = "0.1.0"
+description = "Sync archived Garmin PostgreSQL data to Notion"
+requires-python = ">=3.13"
+dependencies = [
+    "garmin-postgres-core",
+    "notion-client>=2.2.1",
+    "python-dotenv>=1.0.0",
+    "typer>=0.15.0",
+]
+
+[project.scripts]
+notion-sync = "notion_sync.cli:app"
+
+[tool.uv.sources]
+garmin-postgres-core = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/notion_sync"]

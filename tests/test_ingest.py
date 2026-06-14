@@ -2,8 +2,8 @@ from datetime import date, datetime, timezone
 
 from sqlalchemy import select
 
-import garmin_postgres.ingest.pipeline as pipeline
-from garmin_postgres.ingest.pipeline import (
+import garmin_sync.ingest.pipeline as pipeline
+from garmin_sync.ingest.pipeline import (
     upsert_activity,
     upsert_activity_detail,
     upsert_activity_file,

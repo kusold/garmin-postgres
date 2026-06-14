@@ -2,9 +2,9 @@ from datetime import date, datetime, timezone
 
 import pytest
 
-from garmin_postgres.ingest.parsers.activity import parse_activity
-from garmin_postgres.ingest.parsers.daily_summary import parse_daily_summary
-from garmin_postgres.ingest.parsers.personal_record import (
+from garmin_sync.ingest.parsers.activity import parse_activity
+from garmin_sync.ingest.parsers.daily_summary import parse_daily_summary
+from garmin_sync.ingest.parsers.personal_record import (
     parse_personal_record,
     parse_personal_records,
 )
