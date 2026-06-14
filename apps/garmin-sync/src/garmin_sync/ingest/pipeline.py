@@ -6,12 +6,12 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlmodel import Session
 
-from garmin_postgres.auth import load_user_client, save_tokens
+from garmin_sync.auth import load_user_client, save_tokens
 from garmin_postgres.config import get_settings
-from garmin_postgres.ingest.client import GarminClient
-from garmin_postgres.ingest.parsers.activity import parse_activity
-from garmin_postgres.ingest.parsers.daily_summary import parse_daily_summary
-from garmin_postgres.ingest.parsers.personal_record import parse_personal_record
+from garmin_sync.ingest.client import GarminClient
+from garmin_sync.ingest.parsers.activity import parse_activity
+from garmin_sync.ingest.parsers.daily_summary import parse_daily_summary
+from garmin_sync.ingest.parsers.personal_record import parse_personal_record
 from garmin_postgres.models.activity import Activity
 from garmin_postgres.models.activity_detail import ActivityDetail
 from garmin_postgres.models.activity_file import ActivityFile

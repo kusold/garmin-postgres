@@ -10,7 +10,7 @@ from sqlmodel import Session
 from garmin_postgres.db import get_engine
 from garmin_postgres.models.user import User
 
-app = typer.Typer(name="garmin-postgres", help="Archive Garmin Connect data into PostgreSQL.")
+app = typer.Typer(name="garmin-sync", help="Archive Garmin Connect data into PostgreSQL.")
 auth_app = typer.Typer(name="auth", help="Authentication commands.")
 ingest_app = typer.Typer(name="ingest", help="Data ingestion commands.")
 app.add_typer(auth_app, name="auth")
@@ -22,11 +22,7 @@ def _alembic_script_location():
     if packaged_location.is_dir():
         return packaged_location
 
-    source_tree_location = Path(__file__).resolve().parents[2] / "alembic"
-    if source_tree_location.is_dir():
-        return source_tree_location
-
-    raise FileNotFoundError("Could not find packaged or source-tree Alembic migrations")
+    raise FileNotFoundError("Could not find packaged Alembic migrations")
 
 
 def _ensure_db_ready() -> None:
@@ -64,7 +60,7 @@ def login(
     email: str = typer.Option(None, "--email", "-e", help="Garmin account email"),
 ) -> None:
     """Login to Garmin Connect and store tokens."""
-    from garmin_postgres.auth import login_interactive, upsert_user
+    from garmin_sync.auth import login_interactive, upsert_user
 
     _ensure_db_ready()
 
@@ -79,7 +75,7 @@ def login(
 @auth_app.command()
 def status() -> None:
     """Show authentication status for all users."""
-    from garmin_postgres.auth import refresh_tokens
+    from garmin_sync.auth import refresh_tokens
 
     _ensure_db_ready()
 
@@ -87,7 +83,7 @@ def status() -> None:
     with Session(engine) as session:
         users = session.scalars(select(User)).all()
         if not users:
-            typer.echo("No users found. Run 'garmin-postgres auth login' to add a user.")
+            typer.echo("No users found. Run 'garmin-sync auth login' to add a user.")
             return
 
         for user in users:
@@ -114,7 +110,7 @@ def run(
         typer.echo("--days-back must be at least 1", err=True)
         raise typer.Exit(1)
 
-    from garmin_postgres.ingest.pipeline import run_for_all_users
+    from garmin_sync.ingest.pipeline import run_for_all_users
 
     _ensure_db_ready()
 
@@ -144,7 +140,7 @@ def backfill(
     dry_run: bool = typer.Option(False, "--dry-run", help="Fetch data but don't write to DB"),
 ) -> None:
     """Run historical backfill for all active users."""
-    from garmin_postgres.ingest.pipeline import run_for_all_users
+    from garmin_sync.ingest.pipeline import run_for_all_users
 
     _ensure_db_ready()
 

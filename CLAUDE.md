@@ -2,7 +2,7 @@
 
 ## Project Summary
 
-Archives all available Garmin Connect health and fitness data into PostgreSQL on an ongoing basis.
+Archives available Garmin Connect health and fitness data into PostgreSQL and syncs archived data to Notion.
 
 ## Tech Stack
 
@@ -10,6 +10,7 @@ Archives all available Garmin Connect health and fitness data into PostgreSQL on
 - **SQLModel** ORM + **Alembic** migrations
 - **PostgreSQL 17** via Podman Compose
 - **python-garminconnect** (uses **garth** for OAuth)
+- **notion-client** for Notion export
 - **pytest** + **testcontainers** for integration testing against real Postgres
 - **typer** for CLI
 - Future: FastAPI (deferred), Grafana dashboards (deferred)
@@ -18,13 +19,16 @@ Archives all available Garmin Connect health and fitness data into PostgreSQL on
 
 ```bash
 # Install dependencies
-uv sync
+uv sync --all-packages --group dev
 
 # Run tests (requires podman for testcontainers)
 uv run pytest
 
 # Run ingestion
-uv run garmin-postgres ingest run
+uv run garmin-sync ingest run
+
+# Sync already-ingested data to Notion
+uv run notion-sync run --user <garmin-display-name>
 
 # Run migrations
 uv run alembic upgrade head
@@ -36,16 +40,12 @@ podman compose up -d
 ## Project Structure
 
 ```
-src/garmin_postgres/     # Main package
-├── cli.py               # CLI entry point (typer)
-├── config.py            # Pydantic Settings
-├── db.py                # Engine + session factory
-├── models/              # SQLModel table definitions
-├── ingest/              # Fetch → parse → upsert pipeline
-│   ├── client.py        # Garmin client wrapper
-│   ├── pipeline.py      # Orchestration
-│   └── parsers/         # Pure functions: JSON → SQLModel instances
-alembic/                 # Migrations
+packages/garmin-postgres-core/
+└── src/garmin_postgres/ # Shared config, DB, models, migrations
+apps/garmin-sync/
+└── src/garmin_sync/     # Garmin auth, ingest, and CLI
+apps/notion-sync/
+└── src/notion_sync/     # PostgreSQL to Notion sync CLI
 tests/                   # pytest + real Postgres via testcontainers
 specs/                   # Design documents (read before implementation)
 ```
@@ -59,6 +59,8 @@ specs/                   # Design documents (read before implementation)
 - **Sync engine for ingestion** — Async engine added later for FastAPI
 - **Systemd timers** — Run twice daily, not a long-running daemon
 - **Parsers are pure functions** — Easy to test without DB or API access
+- **Notion sync is Postgres-only** — It must not call Garmin or add new ingests
+- **Notion sync is single-user** — `notion-sync run` requires `--user`
 
 ## Specs
 
