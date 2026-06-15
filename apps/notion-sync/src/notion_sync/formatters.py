@@ -59,7 +59,6 @@ def format_activity_type(activity_type: str | None, activity_name: str = "") -> 
         activity_type_name = "Rowing"
     elif formatted_type in ["Yoga", "Pilates"]:
         activity_type_name = "Yoga/Pilates"
-        activity_subtype = formatted_type
 
     if formatted_type in activity_mapping:
         activity_type_name = activity_mapping[formatted_type]
