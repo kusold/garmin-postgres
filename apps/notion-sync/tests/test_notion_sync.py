@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import date, datetime, timezone
 
 import pytest
@@ -17,6 +18,14 @@ from notion_sync.sync import (
     _apply_datetime_window,
     run_sync,
 )
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    """Strip ANSI color/style codes so CLI assertions hold even when rich colorizes
+    output (e.g. under GITHUB_ACTIONS)."""
+    return _ANSI.sub("", text)
 
 
 class FakeDatabases:
@@ -245,10 +254,11 @@ def test_notion_sync_run_requires_user():
     from notion_sync.cli import app
 
     result = CliRunner().invoke(app, ["run", "--dry-run"])
+    output = _strip_ansi(result.output)
 
     assert result.exit_code != 0
-    assert "Missing option" in result.output
-    assert "--user" in result.output
+    assert "Missing option" in output
+    assert "--user" in output
 
 
 # --------------------------------------------------------------------------- #
@@ -486,4 +496,4 @@ def test_cli_run_rejects_start_date_after_end_date():
     )
 
     assert result.exit_code != 0
-    assert "--start-date must be on or before --end-date" in result.output
+    assert "--start-date must be on or before --end-date" in _strip_ansi(result.output)
