@@ -16,6 +16,11 @@ app = typer.Typer(name="notion-sync", help="Sync archived Garmin data from Postg
 def _date_range(days_back: int | None, start_date: str | None, end_date: str | None) -> tuple[date | None, date | None]:
     parsed_start = date.fromisoformat(start_date) if start_date else None
     parsed_end = date.fromisoformat(end_date) if end_date else None
+    if parsed_start and parsed_end and parsed_start > parsed_end:
+        typer.echo("--start-date must be on or before --end-date", err=True)
+        raise typer.Exit(1)
+    if parsed_start and days_back is not None:
+        typer.echo("--days-back is ignored when --start-date is provided", err=True)
     if parsed_start:
         return parsed_start, parsed_end
     if days_back is None:
@@ -79,7 +84,6 @@ def config() -> None:
     notion_settings = get_settings()
     db_settings = get_db_settings()
     typer.echo(f"database_url: {db_settings.database_url}")
-    typer.echo(f"notion_timezone: {notion_settings.timezone}")
     typer.echo(f"activities: {'configured' if notion_settings.activities_database_id else 'missing'}")
     typer.echo(f"daily_steps: {'configured' if notion_settings.daily_steps_database_id else 'missing'}")
     typer.echo(f"personal_records: {'configured' if notion_settings.personal_records_database_id else 'missing'}")
