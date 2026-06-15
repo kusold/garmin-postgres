@@ -62,7 +62,7 @@ def activity_page(activity: Activity) -> tuple[dict, dict, dict | None]:
     return properties, activity_filter(activity, activity_name, activity_type), icon
 
 
-def daily_steps_page(summary: DailySummary) -> tuple[dict, dict]:
+def daily_steps_page(summary: DailySummary) -> tuple[dict, dict, dict | None]:
     raw = summary.raw_json or {}
     total_distance = raw.get("totalDistance") or raw.get("totalDistanceMeters") or 0
     properties = {
@@ -78,7 +78,7 @@ def daily_steps_page(summary: DailySummary) -> tuple[dict, dict]:
             {"property": "Activity Type", "title": {"equals": "Walking"}},
         ]
     }
-    return properties, filter_payload
+    return properties, filter_payload, None
 
 
 def personal_record_name(record: PersonalRecord) -> str:
@@ -89,7 +89,7 @@ def personal_record_page(record: PersonalRecord) -> tuple[dict, dict, dict | Non
     raw = record.raw_json or {}
     name = personal_record_name(record)
     value = record.value_text
-    pace = str(raw.get("pace", "")) if raw.get("pace") is not None else ""
+    pace = str(raw.get("pace") or "")
     properties = {
         "Date": {"date": {"start": record.record_date.isoformat()}},
         "Activity Type": {"select": {"name": format_activity_type(record.activity_type)[0]}},

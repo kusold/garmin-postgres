@@ -1,3 +1,5 @@
+import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 
@@ -11,6 +13,8 @@ from garmin_postgres.models.user import User
 from notion_sync.config import NotionSettings
 from notion_sync.mappers import activity_page, daily_steps_page, personal_record_page
 from notion_sync.notion import NotionSink
+
+logger = logging.getLogger(__name__)
 
 
 DATA_TYPES = ["activities", "daily_steps", "personal_records"]
@@ -52,6 +56,88 @@ def _users_clause(stmt, user_filter: str | None):
     return stmt
 
 
+def _apply_datetime_window(
+    stmt,
+    column,
+    start_date: date | None,
+    end_date: date | None,
+):
+    """Half-open [start, end+1day) window on a tz-aware datetime column (UTC)."""
+    if start_date:
+        start_at = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
+        stmt = stmt.where(column >= start_at)
+    if end_date:
+        end_before = datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=timezone.utc)
+        stmt = stmt.where(column < end_before)
+    return stmt
+
+
+def _apply_date_window(
+    stmt,
+    column,
+    start_date: date | None,
+    end_date: date | None,
+):
+    """Inclusive [start, end] window on a date column."""
+    if start_date:
+        stmt = stmt.where(column >= start_date)
+    if end_date:
+        stmt = stmt.where(column <= end_date)
+    return stmt
+
+
+def _sync_table(
+    session: Session,
+    sink: NotionSink,
+    database_id: str | None,
+    *,
+    not_configured_error: str,
+    model,
+    order_column,
+    date_window: Callable[..., object],
+    mapper: Callable[..., tuple[dict, dict, dict | None]],
+    start_date: date | None = None,
+    end_date: date | None = None,
+    user_filter: str | None = None,
+) -> SyncResult:
+    if not database_id:
+        return SyncResult(status="skipped", skipped=1, error=not_configured_error)
+
+    stmt = select(model).order_by(order_column)
+    stmt = _users_clause(stmt, user_filter)
+    stmt = date_window(stmt, order_column, start_date, end_date)
+
+    rows = created = updated = errors = 0
+    for row in session.scalars(stmt).all():
+        rows += 1
+        try:
+            properties, filter_payload, icon = mapper(row)
+            action = sink.upsert_page(
+                database_id,
+                filter_payload=filter_payload,
+                properties=properties,
+                icon=icon,
+            )
+            if action == "created":
+                created += 1
+            elif action == "updated":
+                updated += 1
+        except Exception:
+            logger.exception(
+                "Failed to sync %s id=%s",
+                type(row).__name__,
+                getattr(row, "id", "?"),
+            )
+            errors += 1
+    return SyncResult(
+        status=_status(rows, errors),
+        rows=rows,
+        created=created,
+        updated=updated,
+        errors=errors,
+    )
+
+
 def sync_activities(
     session: Session,
     sink: NotionSink,
@@ -61,29 +147,19 @@ def sync_activities(
     end_date: date | None = None,
     user_filter: str | None = None,
 ) -> SyncResult:
-    if not database_id:
-        return SyncResult(status="skipped", skipped=1, error="NOTION_ACTIVITIES_DB_ID is not configured")
-
-    stmt = select(Activity).order_by(Activity.start_time)
-    stmt = _users_clause(stmt, user_filter)
-    if start_date:
-        start_at = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
-        stmt = stmt.where(Activity.start_time >= start_at)
-    if end_date:
-        end_before = datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=timezone.utc)
-        stmt = stmt.where(Activity.start_time < end_before)
-
-    rows = created = updated = errors = 0
-    for activity in session.scalars(stmt).all():
-        rows += 1
-        try:
-            properties, filter_payload, icon = activity_page(activity)
-            action = sink.upsert_page(database_id, filter_payload=filter_payload, properties=properties, icon=icon)
-            created += action == "created"
-            updated += action == "updated"
-        except Exception:
-            errors += 1
-    return SyncResult(status=_status(rows, errors), rows=rows, created=created, updated=updated, errors=errors)
+    return _sync_table(
+        session,
+        sink,
+        database_id,
+        not_configured_error="NOTION_ACTIVITIES_DB_ID is not configured",
+        model=Activity,
+        order_column=Activity.start_time,
+        date_window=_apply_datetime_window,
+        mapper=activity_page,
+        start_date=start_date,
+        end_date=end_date,
+        user_filter=user_filter,
+    )
 
 
 def sync_daily_steps(
@@ -95,27 +171,19 @@ def sync_daily_steps(
     end_date: date | None = None,
     user_filter: str | None = None,
 ) -> SyncResult:
-    if not database_id:
-        return SyncResult(status="skipped", skipped=1, error="NOTION_DAILY_STEPS_DB_ID is not configured")
-
-    stmt = select(DailySummary).order_by(DailySummary.calendar_date)
-    stmt = _users_clause(stmt, user_filter)
-    if start_date:
-        stmt = stmt.where(DailySummary.calendar_date >= start_date)
-    if end_date:
-        stmt = stmt.where(DailySummary.calendar_date <= end_date)
-
-    rows = created = updated = errors = 0
-    for summary in session.scalars(stmt).all():
-        rows += 1
-        try:
-            properties, filter_payload = daily_steps_page(summary)
-            action = sink.upsert_page(database_id, filter_payload=filter_payload, properties=properties)
-            created += action == "created"
-            updated += action == "updated"
-        except Exception:
-            errors += 1
-    return SyncResult(status=_status(rows, errors), rows=rows, created=created, updated=updated, errors=errors)
+    return _sync_table(
+        session,
+        sink,
+        database_id,
+        not_configured_error="NOTION_DAILY_STEPS_DB_ID is not configured",
+        model=DailySummary,
+        order_column=DailySummary.calendar_date,
+        date_window=_apply_date_window,
+        mapper=daily_steps_page,
+        start_date=start_date,
+        end_date=end_date,
+        user_filter=user_filter,
+    )
 
 
 def sync_personal_records(
@@ -127,27 +195,19 @@ def sync_personal_records(
     end_date: date | None = None,
     user_filter: str | None = None,
 ) -> SyncResult:
-    if not database_id:
-        return SyncResult(status="skipped", skipped=1, error="NOTION_PERSONAL_RECORDS_DB_ID is not configured")
-
-    stmt = select(PersonalRecord).order_by(PersonalRecord.record_date)
-    stmt = _users_clause(stmt, user_filter)
-    if start_date:
-        stmt = stmt.where(PersonalRecord.record_date >= start_date)
-    if end_date:
-        stmt = stmt.where(PersonalRecord.record_date <= end_date)
-
-    rows = created = updated = errors = 0
-    for record in session.scalars(stmt).all():
-        rows += 1
-        try:
-            properties, filter_payload, icon = personal_record_page(record)
-            action = sink.upsert_page(database_id, filter_payload=filter_payload, properties=properties, icon=icon)
-            created += action == "created"
-            updated += action == "updated"
-        except Exception:
-            errors += 1
-    return SyncResult(status=_status(rows, errors), rows=rows, created=created, updated=updated, errors=errors)
+    return _sync_table(
+        session,
+        sink,
+        database_id,
+        not_configured_error="NOTION_PERSONAL_RECORDS_DB_ID is not configured",
+        model=PersonalRecord,
+        order_column=PersonalRecord.record_date,
+        date_window=_apply_date_window,
+        mapper=personal_record_page,
+        start_date=start_date,
+        end_date=end_date,
+        user_filter=user_filter,
+    )
 
 
 def run_sync(
