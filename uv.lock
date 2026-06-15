@@ -510,6 +510,7 @@ source = { editable = "apps/notion-sync" }
 dependencies = [
     { name = "garmin-postgres-core" },
     { name = "notion-client" },
+    { name = "pydantic-settings" },
     { name = "python-dotenv" },
     { name = "typer" },
 ]
@@ -518,6 +519,7 @@ dependencies = [
 requires-dist = [
     { name = "garmin-postgres-core", editable = "packages/garmin-postgres-core" },
     { name = "notion-client", specifier = ">=2.2.1" },
+    { name = "pydantic-settings", specifier = ">=2.7.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "typer", specifier = ">=0.15.0" },
 ]
