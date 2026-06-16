@@ -159,7 +159,7 @@ def test_personal_record_page_maps_currently_ingested_personal_records():
     assert properties["Record"]["title"][0]["text"]["content"] == "5K"
     assert properties["Value"]["rich_text"][0]["text"]["content"] == "00:22:14"
     assert properties["PR"]["checkbox"] is True
-    assert filter_payload["and"][0]["property"] == "Record"
+    assert filter_payload == {"property": "typeId", "number": {"equals": 3}}
     assert icon is None
 
 
@@ -185,14 +185,16 @@ def test_notion_sink_updates_when_existing_page_exists():
     assert client.pages.updated[0]["page_id"] == "page-1"
 
 
-def test_notion_sink_dry_run_does_not_query_or_write():
+def test_notion_sink_dry_run_queries_but_does_not_write():
     client = FakeNotionClient(results=[{"id": "page-1"}])
     sink = NotionSink(client, dry_run=True)
 
     action = sink.upsert_page("db", filter_payload={"property": "Name"}, properties={"Name": {}})
 
     assert action == "dry_run"
-    assert client.databases.queries == []
+    assert client.databases.queries == [
+        {"database_id": "db", "filter": {"property": "Name"}},
+    ]
     assert client.pages.created == []
     assert client.pages.updated == []
 
@@ -268,6 +270,11 @@ def test_notion_sync_run_requires_user():
 def _settings_with_activities():
     """Build a NotionSettings with activities configured (env file ignored for test isolation)."""
     return NotionSettings(_env_file=None, token="tok", activities_database_id="activities-db")
+
+
+def _settings_with_personal_records():
+    """Build a NotionSettings with personal records configured."""
+    return NotionSettings(_env_file=None, token="tok", personal_records_database_id="records-db")
 
 
 def test_run_sync_creates_page_when_no_existing_page():
@@ -347,6 +354,51 @@ def test_run_sync_logs_error_and_marks_partial_when_a_row_fails(caplog):
     msg = failure_records[0].getMessage()
     assert "Activity" in msg
     assert "id=42" in msg  # the failing row's id
+
+
+def test_run_sync_updates_same_personal_record_type_to_latest_value():
+    first_record = PersonalRecord(
+        id=1,
+        user_id=1,
+        type_id=3,
+        record_date=date(2026, 5, 1),
+        activity_type="running",
+        value_text="00:23:00",
+        raw_json={"typeId": 3, "value": "00:23:00"},
+    )
+    latest_record = PersonalRecord(
+        id=2,
+        user_id=1,
+        type_id=3,
+        record_date=date(2026, 6, 1),
+        activity_type="running",
+        value_text="00:22:14",
+        raw_json={"typeId": 3, "value": "00:22:14"},
+    )
+    session = FakeSession(rows=[[first_record, latest_record]])
+    query_results = [[], [{"id": "page-1"}]]
+
+    def query_side_effect(**kwargs):
+        return {"results": query_results.pop(0)}
+
+    client = FakeNotionClient(query_side_effect=query_side_effect)
+    sink = NotionSink(client, dry_run=False, min_interval=0.0, sleep=lambda _s: None)
+    settings = _settings_with_personal_records()
+
+    result = run_sync(session, sink, settings, data_types=["personal_records"])
+
+    info = result["personal_records"]
+    assert info["status"] == "success"
+    assert info["rows"] == 2
+    assert info["created"] == 1
+    assert info["updated"] == 1
+    assert len(client.pages.created) == 1
+    assert len(client.pages.updated) == 1
+    assert client.databases.queries[0]["filter"] == {"property": "typeId", "number": {"equals": 3}}
+    assert client.databases.queries[1]["filter"] == {"property": "typeId", "number": {"equals": 3}}
+    updated_properties = client.pages.updated[0]["properties"]
+    assert updated_properties["Date"]["date"]["start"] == "2026-06-01"
+    assert updated_properties["Value"]["rich_text"][0]["text"]["content"] == "00:22:14"
 
 
 # --------------------------------------------------------------------------- #

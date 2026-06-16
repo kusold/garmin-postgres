@@ -100,9 +100,7 @@ def personal_record_page(record: PersonalRecord) -> tuple[dict, dict, dict | Non
         "PR": {"checkbox": True},
     }
     filter_payload = {
-        "and": [
-            {"property": "Record", "title": {"equals": name}},
-            {"property": "Date", "date": {"equals": record.record_date.isoformat()}},
-        ]
+        "property": "typeId",
+        "number": {"equals": record.type_id},
     }
     return properties, filter_payload, None

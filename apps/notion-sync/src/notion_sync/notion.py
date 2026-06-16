@@ -111,14 +111,14 @@ class NotionSink:
         icon: dict | None = None,
         cover: dict | None = None,
     ) -> str:
-        if self.dry_run:
-            return "dry_run"
-
         existing = self._invoke(
             self.client.databases.query,
             database_id=database_id,
             filter=filter_payload,
         )["results"]
+
+        if self.dry_run:
+            return "dry_run"
 
         if existing:
             update_payload: dict[str, Any] = {
