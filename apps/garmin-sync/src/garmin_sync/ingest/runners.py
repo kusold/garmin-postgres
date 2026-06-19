@@ -341,6 +341,26 @@ def list_activity_ids(
     session: Session | None = None,
     raise_on_error: bool = True,
 ) -> list[int]:
+    raw_activities = list_activity_summaries(
+        user_id=user_id,
+        start_date=start_date,
+        end_date=end_date,
+        dry_run=dry_run,
+        session=session,
+        raise_on_error=raise_on_error,
+    )
+    return [int(raw_activity["activityId"]) for raw_activity in raw_activities]
+
+
+def list_activity_summaries(
+    *,
+    user_id: int,
+    start_date: date,
+    end_date: date,
+    dry_run: bool = False,
+    session: Session | None = None,
+    raise_on_error: bool = True,
+) -> list[dict]:
     with _session_scope(session) as current_session:
         try:
             user = _get_user(current_session, user_id)
@@ -352,11 +372,14 @@ def list_activity_ids(
                 start_date.isoformat(),
                 end_date.isoformat(),
             )
-            if not raw_activities:
-                return []
             if not dry_run:
-                save_tokens(current_session, user, client.garmin)
-            return [int(raw_activity["activityId"]) for raw_activity in raw_activities]
+                _save_tokens_and_mark_ingested(
+                    current_session,
+                    user,
+                    client,
+                    dry_run=dry_run,
+                )
+            return raw_activities
         except Exception:
             current_session.rollback()
             if raise_on_error:
@@ -371,6 +394,7 @@ def ingest_activity(
     dry_run: bool = False,
     include_details: bool = True,
     include_files: bool = True,
+    activity_summary: dict | None = None,
     session: Session | None = None,
     raise_on_error: bool = False,
 ) -> IngestResult:
@@ -388,7 +412,18 @@ def ingest_activity(
                     metrics={"detail_rows": 0, "detail_errors": 0},
                 )
 
-            raw_activity = client.get_activity(str(activity_id))
+            try:
+                raw_activity = client.get_activity(str(activity_id))
+            except Exception as detail_err:
+                if activity_summary is None:
+                    raise
+                logger.warning(
+                    "Failed to fetch detail for activity %s, using summary: %s",
+                    activity_id,
+                    detail_err,
+                )
+                raw_activity = activity_summary
+
             activity = parse_activity(raw_activity, user.id)
 
             if not dry_run:
@@ -464,7 +499,7 @@ def ingest_activities_range(
     session: Session | None = None,
 ) -> IngestResult:
     try:
-        activity_ids = list_activity_ids(
+        raw_activities = list_activity_summaries(
             user_id=user_id,
             start_date=start_date,
             end_date=end_date,
@@ -484,7 +519,24 @@ def ingest_activities_range(
         )
 
     results: list[IngestResult] = []
-    for activity_id in activity_ids:
+    for raw_activity in raw_activities:
+        try:
+            activity_id = int(raw_activity["activityId"])
+        except Exception as e:
+            logger.warning(
+                "Failed to read activity ID for user %s: %s",
+                user_id,
+                e,
+            )
+            results.append(
+                IngestResult.error_result(
+                    ACTIVITIES,
+                    error=str(e),
+                    metrics={"detail_rows": 0, "detail_errors": 0},
+                )
+            )
+            continue
+
         results.append(
             ingest_activity(
                 user_id=user_id,
@@ -492,6 +544,7 @@ def ingest_activities_range(
                 dry_run=dry_run,
                 include_details=include_details,
                 include_files=include_files,
+                activity_summary=raw_activity,
                 session=session,
             )
         )
