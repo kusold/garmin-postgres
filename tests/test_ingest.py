@@ -1,4 +1,5 @@
 from datetime import date, datetime, timezone
+from unittest.mock import MagicMock
 
 from sqlalchemy import select
 
@@ -367,6 +368,39 @@ class TestUpsertActivityDetail:
 
 
 class TestRunIngestionActivityDetails:
+    def test_empty_activity_range_persists_tokens_and_marks_ingested(self, session, monkeypatch):
+        user = _create_user(session)
+        fake_garmin = MagicMock()
+        fake_garmin.client.dumps.return_value = '{"token": "fresh"}'
+
+        class FakeGarminClient:
+            def __init__(self, garmin):
+                self.garmin = garmin
+
+            def get_activities_by_date(self, startdate, enddate):
+                return []
+
+        monkeypatch.setattr(runners, "load_user_client", lambda session, user: fake_garmin)
+        monkeypatch.setattr(runners, "GarminClient", FakeGarminClient)
+
+        result = pipeline.run_ingestion(
+            session,
+            user,
+            date(2026, 6, 1),
+            date(2026, 6, 1),
+            data_types=["activities"],
+        )
+
+        assert result["activities"] == {
+            "status": "success",
+            "rows": 0,
+            "errors": 0,
+            "detail_rows": 0,
+            "detail_errors": 0,
+        }
+        assert user.tokens_json == '{"token": "fresh"}'
+        assert user.last_ingest_at is not None
+
     def test_fetches_and_stores_activity_details_after_activity_upsert(self, session, monkeypatch):
         user = _create_user(session)
         calls = []
@@ -477,6 +511,58 @@ class TestRunIngestionActivityDetails:
             "errors": 0,
             "detail_rows": 0,
             "detail_errors": 1,
+        }
+
+    def test_activity_detail_fetch_failure_falls_back_to_summary(self, session, monkeypatch):
+        user = _create_user(session)
+
+        class FakeGarminClient:
+            def __init__(self, garmin):
+                self.garmin = garmin
+
+            def get_activities_by_date(self, startdate, enddate):
+                return [
+                    {
+                        "activityId": 10004,
+                        "activityName": "Summary Run",
+                        "activityType": {"typeKey": "running"},
+                        "startTimeGMT": "2026-06-01 14:30:00",
+                    }
+                ]
+
+            def get_activity(self, activity_id):
+                raise RuntimeError("detail endpoint unavailable")
+
+            def get_activity_details(self, activity_id, maxchart=2000, maxpoly=4000):
+                return {"activityId": int(activity_id), "activityDetailMetrics": []}
+
+            def download_activity(self, activity_id):
+                return b"fit data"
+
+        monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
+        monkeypatch.setattr(runners, "GarminClient", FakeGarminClient)
+        monkeypatch.setattr(runners, "save_tokens", lambda session, user, garmin: None)
+        monkeypatch.setattr(runners.time, "sleep", lambda seconds: None)
+
+        result = pipeline.run_ingestion(
+            session,
+            user,
+            date(2026, 6, 1),
+            date(2026, 6, 1),
+            data_types=["activities"],
+        )
+
+        activity = session.scalars(
+            select(Activity).where(Activity.activity_id == 10004)
+        ).one()
+        assert activity.activity_type == "running"
+        assert activity.raw_json["activityName"] == "Summary Run"
+        assert result["activities"] == {
+            "status": "success",
+            "rows": 1,
+            "errors": 0,
+            "detail_rows": 1,
+            "detail_errors": 0,
         }
 
     def test_dry_run_fetches_details_without_writing_rows(self, session, monkeypatch):
