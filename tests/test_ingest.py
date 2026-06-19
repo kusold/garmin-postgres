@@ -2,7 +2,9 @@ from datetime import date, datetime, timezone
 
 from sqlalchemy import select
 
+import garmin_sync.ingest.date_windows as date_windows
 import garmin_sync.ingest.pipeline as pipeline
+import garmin_sync.ingest.runners as runners
 from garmin_sync.ingest.pipeline import (
     upsert_activity,
     upsert_activity_detail,
@@ -397,10 +399,10 @@ class TestRunIngestionActivityDetails:
                 calls.append(("download", activity_id))
                 return b"fit data"
 
-        monkeypatch.setattr(pipeline, "load_user_client", lambda session, user: object())
-        monkeypatch.setattr(pipeline, "GarminClient", FakeGarminClient)
-        monkeypatch.setattr(pipeline, "save_tokens", lambda session, user, garmin: None)
-        monkeypatch.setattr(pipeline.time, "sleep", lambda seconds: None)
+        monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
+        monkeypatch.setattr(runners, "GarminClient", FakeGarminClient)
+        monkeypatch.setattr(runners, "save_tokens", lambda session, user, garmin: None)
+        monkeypatch.setattr(runners.time, "sleep", lambda seconds: None)
 
         result = pipeline.run_ingestion(
             session,
@@ -450,10 +452,10 @@ class TestRunIngestionActivityDetails:
             def download_activity(self, activity_id):
                 return b"fit data"
 
-        monkeypatch.setattr(pipeline, "load_user_client", lambda session, user: object())
-        monkeypatch.setattr(pipeline, "GarminClient", FakeGarminClient)
-        monkeypatch.setattr(pipeline, "save_tokens", lambda session, user, garmin: None)
-        monkeypatch.setattr(pipeline.time, "sleep", lambda seconds: None)
+        monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
+        monkeypatch.setattr(runners, "GarminClient", FakeGarminClient)
+        monkeypatch.setattr(runners, "save_tokens", lambda session, user, garmin: None)
+        monkeypatch.setattr(runners.time, "sleep", lambda seconds: None)
 
         result = pipeline.run_ingestion(
             session,
@@ -470,7 +472,7 @@ class TestRunIngestionActivityDetails:
         assert activity is not None
         assert details == []
         assert result["activities"] == {
-            "status": "success",
+            "status": "partial",
             "rows": 1,
             "errors": 0,
             "detail_rows": 0,
@@ -498,9 +500,9 @@ class TestRunIngestionActivityDetails:
             def download_activity(self, activity_id):
                 raise AssertionError("dry run should not download activity files")
 
-        monkeypatch.setattr(pipeline, "load_user_client", lambda session, user: object())
-        monkeypatch.setattr(pipeline, "GarminClient", FakeGarminClient)
-        monkeypatch.setattr(pipeline.time, "sleep", lambda seconds: None)
+        monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
+        monkeypatch.setattr(runners, "GarminClient", FakeGarminClient)
+        monkeypatch.setattr(runners.time, "sleep", lambda seconds: None)
 
         result = pipeline.run_ingestion(
             session,
@@ -645,12 +647,20 @@ class TestRunForAllUsersDateRange:
         calls = []
 
         def fake_run_ingestion(
-            session, user, start_date, end_date, *, dry_run=False, data_types=None
+            session,
+            user,
+            start_date,
+            end_date,
+            *,
+            dry_run=False,
+            data_types=None,
+            include_details=True,
+            include_files=True,
         ):
             calls.append((start_date, end_date))
             return {"daily_summary": {"status": "success", "rows": 0, "errors": 0}}
 
-        monkeypatch.setattr(pipeline, "date", FixedDate)
+        monkeypatch.setattr(date_windows, "date", FixedDate)
         monkeypatch.setattr(
             pipeline, "get_active_users", lambda session, user_filter=None: [user]
         )
@@ -665,7 +675,15 @@ class TestRunForAllUsersDateRange:
         calls = []
 
         def fake_run_ingestion(
-            session, user, start_date, end_date, *, dry_run=False, data_types=None
+            session,
+            user,
+            start_date,
+            end_date,
+            *,
+            dry_run=False,
+            data_types=None,
+            include_details=True,
+            include_files=True,
         ):
             calls.append((start_date, end_date))
             return {"daily_summary": {"status": "success", "rows": 0, "errors": 0}}
@@ -720,9 +738,9 @@ class TestRunIngestionPersonalRecords:
                 }
             ]
         )
-        monkeypatch.setattr(pipeline, "load_user_client", lambda session, user: object())
-        monkeypatch.setattr(pipeline, "GarminClient", lambda garmin: fake_client)
-        monkeypatch.setattr(pipeline, "save_tokens", lambda session, user, garmin: None)
+        monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
+        monkeypatch.setattr(runners, "GarminClient", lambda garmin: fake_client)
+        monkeypatch.setattr(runners, "save_tokens", lambda session, user, garmin: None)
 
         result = pipeline.run_ingestion(
             session,
@@ -749,9 +767,9 @@ class TestRunIngestionPersonalRecords:
                 }
             ]
         )
-        monkeypatch.setattr(pipeline, "load_user_client", lambda session, user: object())
-        monkeypatch.setattr(pipeline, "GarminClient", lambda garmin: fake_client)
-        monkeypatch.setattr(pipeline, "save_tokens", lambda session, user, garmin: None)
+        monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
+        monkeypatch.setattr(runners, "GarminClient", lambda garmin: fake_client)
+        monkeypatch.setattr(runners, "save_tokens", lambda session, user, garmin: None)
 
         result = pipeline.run_ingestion(
             session,
@@ -776,8 +794,8 @@ class TestRunIngestionPersonalRecords:
                 }
             ]
         )
-        monkeypatch.setattr(pipeline, "load_user_client", lambda session, user: object())
-        monkeypatch.setattr(pipeline, "GarminClient", lambda garmin: fake_client)
+        monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
+        monkeypatch.setattr(runners, "GarminClient", lambda garmin: fake_client)
 
         result = pipeline.run_ingestion(
             session,
@@ -795,9 +813,9 @@ class TestRunIngestionPersonalRecords:
     def test_personal_record_errors_do_not_prevent_other_data_types(self, session, monkeypatch):
         user = _create_user(session)
         fake_client = FakeGarminClient(personal_error=RuntimeError("garmin unavailable"))
-        monkeypatch.setattr(pipeline, "load_user_client", lambda session, user: object())
-        monkeypatch.setattr(pipeline, "GarminClient", lambda garmin: fake_client)
-        monkeypatch.setattr(pipeline, "save_tokens", lambda session, user, garmin: None)
+        monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
+        monkeypatch.setattr(runners, "GarminClient", lambda garmin: fake_client)
+        monkeypatch.setattr(runners, "save_tokens", lambda session, user, garmin: None)
 
         result = pipeline.run_ingestion(
             session,
@@ -812,6 +830,7 @@ class TestRunIngestionPersonalRecords:
             "status": "error",
             "rows": 0,
             "errors": 1,
+            "error": "garmin unavailable",
         }
 
     def test_malformed_personal_record_does_not_drop_valid_records(self, session, monkeypatch):
@@ -829,9 +848,9 @@ class TestRunIngestionPersonalRecords:
                 },
             ]
         )
-        monkeypatch.setattr(pipeline, "load_user_client", lambda session, user: object())
-        monkeypatch.setattr(pipeline, "GarminClient", lambda garmin: fake_client)
-        monkeypatch.setattr(pipeline, "save_tokens", lambda session, user, garmin: None)
+        monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
+        monkeypatch.setattr(runners, "GarminClient", lambda garmin: fake_client)
+        monkeypatch.setattr(runners, "save_tokens", lambda session, user, garmin: None)
 
         result = pipeline.run_ingestion(
             session,
