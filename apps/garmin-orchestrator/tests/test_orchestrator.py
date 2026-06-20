@@ -3,6 +3,7 @@ from datetime import date
 import pytest
 from typer.testing import CliRunner
 
+from garmin_orchestrator import tasks
 from garmin_orchestrator.cli import app
 from garmin_orchestrator.flows import (
     _aggregate_result_dicts,
@@ -10,6 +11,7 @@ from garmin_orchestrator.flows import (
     garmin_archive_flow,
     garmin_archive_user_flow,
 )
+from garmin_sync.ingest.results import IngestResult
 
 
 def test_aggregates_child_results_without_losing_metrics():
@@ -72,9 +74,9 @@ def test_user_flow_runs_selected_objects_sequentially(monkeypatch):
         calls.append(("daily", user_id, calendar_date, dry_run))
         return {"status": "success", "rows": 1, "errors": 0}
 
-    def fake_list_activities_task(*, user_id, start_date, end_date):
-        calls.append(("list", user_id, start_date, end_date))
-        return [1001, 1002]
+    def fake_list_activities_task(*, user_id, start_date, end_date, dry_run):
+        calls.append(("list", user_id, start_date, end_date, dry_run))
+        return [{"activityId": 1001}, {"activityId": 1002}]
 
     def fake_activity_task(
         *,
@@ -83,6 +85,7 @@ def test_user_flow_runs_selected_objects_sequentially(monkeypatch):
         dry_run,
         include_details,
         include_files,
+        activity_summary,
     ):
         calls.append((
             "activity",
@@ -91,6 +94,7 @@ def test_user_flow_runs_selected_objects_sequentially(monkeypatch):
             dry_run,
             include_details,
             include_files,
+            activity_summary,
         ))
         return {
             "status": "success",
@@ -109,7 +113,7 @@ def test_user_flow_runs_selected_objects_sequentially(monkeypatch):
         fake_daily_task,
     )
     monkeypatch.setattr(
-        "garmin_orchestrator.flows.list_activity_ids_task",
+        "garmin_orchestrator.flows.list_activity_summaries_task",
         fake_list_activities_task,
     )
     monkeypatch.setattr(
@@ -148,11 +152,83 @@ def test_user_flow_runs_selected_objects_sequentially(monkeypatch):
     assert calls == [
         ("daily", 7, date(2026, 6, 1), True),
         ("daily", 7, date(2026, 6, 2), True),
-        ("list", 7, date(2026, 6, 1), date(2026, 6, 2)),
-        ("activity", 7, 1001, True, True, False),
-        ("activity", 7, 1002, True, True, False),
+        ("list", 7, date(2026, 6, 1), date(2026, 6, 2), True),
+        ("activity", 7, 1001, True, True, False, {"activityId": 1001}),
+        ("activity", 7, 1002, True, True, False, {"activityId": 1002}),
         ("records", 7, True),
     ]
+
+
+def test_list_activity_summaries_task_preserves_dry_run(monkeypatch):
+    calls = []
+
+    def fake_list_activity_summaries(
+        *,
+        user_id,
+        start_date,
+        end_date,
+        dry_run,
+        raise_on_error,
+    ):
+        calls.append((user_id, start_date, end_date, dry_run, raise_on_error))
+        return [{"activityId": 1001}]
+
+    monkeypatch.setattr(tasks, "list_activity_summaries", fake_list_activity_summaries)
+
+    result = tasks.list_activity_summaries_task.fn(
+        user_id=7,
+        start_date=date(2026, 6, 1),
+        end_date=date(2026, 6, 2),
+        dry_run=True,
+    )
+
+    assert result == [{"activityId": 1001}]
+    assert calls == [(7, date(2026, 6, 1), date(2026, 6, 2), True, True)]
+
+
+def test_ingest_activity_task_passes_summary_fallback(monkeypatch):
+    calls = []
+    summary = {
+        "activityId": 1004,
+        "activityName": "Summary Run",
+        "activityType": {"typeKey": "running"},
+        "startTimeGMT": "2026-06-01 14:30:00",
+    }
+
+    def fake_ingest_activity(
+        *,
+        user_id,
+        activity_id,
+        dry_run,
+        include_details,
+        include_files,
+        activity_summary,
+        raise_on_error,
+    ):
+        calls.append((
+            user_id,
+            activity_id,
+            dry_run,
+            include_details,
+            include_files,
+            activity_summary,
+            raise_on_error,
+        ))
+        return IngestResult.success("activities", rows=1)
+
+    monkeypatch.setattr(tasks, "ingest_activity", fake_ingest_activity)
+
+    result = tasks.ingest_activity_task.fn(
+        user_id=7,
+        activity_id=1004,
+        dry_run=True,
+        include_details=True,
+        include_files=False,
+        activity_summary=summary,
+    )
+
+    assert result == {"status": "success", "rows": 1, "errors": 0}
+    assert calls == [(7, 1004, True, True, False, summary, True)]
 
 
 def test_archive_flow_returns_structured_summary(monkeypatch):
