@@ -20,7 +20,7 @@ from garmin_orchestrator.tasks import (
     ingest_activity_task,
     ingest_daily_summary_day_task,
     ingest_personal_records_task,
-    list_activity_ids_task,
+    list_activity_summaries_task,
     resolve_active_users_task,
     resolve_date_window_task,
 )
@@ -114,25 +114,27 @@ def garmin_archive_user_flow(
         )
 
     if ACTIVITIES in data_types:
-        activity_ids = list_activity_ids_task(
+        activity_summaries = list_activity_summaries_task(
             user_id=user_id,
             start_date=start_date,
             end_date=end_date,
+            dry_run=dry_run,
         )
         logger.info(
-            "Resolved %s activity ID(s) for %s",
-            len(activity_ids),
+            "Resolved %s activity summary(s) for %s",
+            len(activity_summaries),
             user_ref["display_name"],
         )
         activity_results = [
             ingest_activity_task(
                 user_id=user_id,
-                activity_id=activity_id,
+                activity_id=int(activity_summary["activityId"]),
                 dry_run=dry_run,
                 include_details=include_details,
                 include_files=include_files,
+                activity_summary=activity_summary,
             )
-            for activity_id in activity_ids
+            for activity_summary in activity_summaries
         ]
         result[ACTIVITIES] = _aggregate_result_dicts(ACTIVITIES, activity_results)
 

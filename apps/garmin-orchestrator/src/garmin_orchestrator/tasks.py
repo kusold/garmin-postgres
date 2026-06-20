@@ -21,7 +21,7 @@ from garmin_sync.ingest.runners import (
     ingest_activity,
     ingest_daily_summary_day,
     ingest_personal_records,
-    list_activity_ids,
+    list_activity_summaries,
 )
 
 
@@ -115,21 +115,23 @@ def ingest_daily_summary_day_task(
 
 
 @task(
-    name="list-activity-ids",
+    name="list-activity-summaries",
     retries=GARMIN_API_RETRIES,
     retry_delay_seconds=GARMIN_API_RETRY_DELAYS,
     tags=GARMIN_API_TAGS,
 )
-def list_activity_ids_task(
+def list_activity_summaries_task(
     *,
     user_id: int,
     start_date: date,
     end_date: date,
-) -> list[int]:
-    return list_activity_ids(
+    dry_run: bool = False,
+) -> list[dict[str, Any]]:
+    return list_activity_summaries(
         user_id=user_id,
         start_date=start_date,
         end_date=end_date,
+        dry_run=dry_run,
         raise_on_error=True,
     )
 
@@ -147,6 +149,7 @@ def ingest_activity_task(
     dry_run: bool = False,
     include_details: bool = True,
     include_files: bool = True,
+    activity_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return _result_dict(
         ingest_activity(
@@ -155,6 +158,7 @@ def ingest_activity_task(
             dry_run=dry_run,
             include_details=include_details,
             include_files=include_files,
+            activity_summary=activity_summary,
             raise_on_error=True,
         )
     )
