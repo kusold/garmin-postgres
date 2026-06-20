@@ -1,0 +1,71 @@
+prefect-version: 3.7.5
+name: garmin-postgres
+
+build: null
+push: null
+
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: .
+
+definitions:
+  work_pools:
+    local_process: &local_process
+      name: garmin-local-process
+      work_queue_name: default
+  schedules:
+    twice_daily: &twice_daily
+      cron: "0 6,18 * * *"
+      timezone: America/Denver
+
+deployments:
+  - name: incremental
+    entrypoint: garmin_orchestrator.flows.garmin_archive_flow
+    description: Twice-daily Garmin archive ingestion for all object types.
+    schedule: *twice_daily
+    parameters:
+      data_types: null
+      dry_run: false
+      fail_on_partial: false
+    work_pool: *local_process
+
+  - name: daily-summary
+    entrypoint: garmin_orchestrator.flows.garmin_archive_flow
+    description: Daily summary ingestion only.
+    parameters:
+      data_types:
+        - daily_summary
+      dry_run: false
+      fail_on_partial: false
+    work_pool: *local_process
+
+  - name: activities
+    entrypoint: garmin_orchestrator.flows.garmin_archive_flow
+    description: Activity ingestion only.
+    parameters:
+      data_types:
+        - activities
+      dry_run: false
+      fail_on_partial: false
+      include_details: true
+      include_files: true
+    work_pool: *local_process
+
+  - name: personal-records
+    entrypoint: garmin_orchestrator.flows.garmin_archive_flow
+    description: Personal records ingestion only.
+    parameters:
+      data_types:
+        - personal_records
+      dry_run: false
+      fail_on_partial: false
+    work_pool: *local_process
+
+  - name: backfill
+    entrypoint: garmin_orchestrator.flows.garmin_archive_flow
+    description: Manual historical backfill with explicit dates or days_back.
+    parameters:
+      data_types: null
+      dry_run: false
+      fail_on_partial: false
+    work_pool: *local_process
