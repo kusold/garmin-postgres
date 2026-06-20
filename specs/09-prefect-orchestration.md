@@ -463,7 +463,7 @@ Recommended local setup:
 
 - keep Garmin archive data in the existing `garmin` database
 - use a separate Prefect metadata database
-- add a `compose.prefect.yaml` or Compose profile for Prefect server services
+- add `compose.prefect.yaml` for Prefect server services
 - run a local process worker against the checked-out uv workspace
 
 Do not store Prefect metadata in the Garmin archive database. Prefect stores run
