@@ -13,6 +13,16 @@ definitions:
     garmin: &garmin
       name: garmin
       work_queue_name: default
+      job_variables:
+        command: >-
+          uv run --no-project --python 3.13
+          --with "prefect==3.7.5"
+          --with "garmin-postgres-core @ git+ssh://git@github.com/kusold/garmin-postgres.git@{{ $PREFECT_GARMIN_COMMIT_SHA }}#subdirectory=packages/garmin-postgres-core"
+          --with "garmin-sync @ git+ssh://git@github.com/kusold/garmin-postgres.git@{{ $PREFECT_GARMIN_COMMIT_SHA }}#subdirectory=apps/garmin-sync"
+          --with "garmin-orchestrator @ git+ssh://git@github.com/kusold/garmin-postgres.git@{{ $PREFECT_GARMIN_COMMIT_SHA }}#subdirectory=apps/garmin-orchestrator"
+          python -m prefect.engine
+        env:
+          UV_CACHE_DIR: /tmp/garmin-postgres-uv-cache
   schedules:
     twice_daily: &twice_daily
       cron: "0 6,18 * * *"

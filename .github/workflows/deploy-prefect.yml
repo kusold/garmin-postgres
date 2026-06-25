@@ -27,6 +27,7 @@ jobs:
 
     env:
       PREFECT_API_URL: ${{ vars.PREFECT_API_URL || 'http://prefect.svc.rockymtn.org/api' }}
+      PREFECT_GARMIN_COMMIT_SHA: ${{ github.sha }}
 
     steps:
       - name: Check out repository

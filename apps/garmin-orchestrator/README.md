@@ -19,14 +19,36 @@ Local deployment setup:
 podman compose -f compose.yaml -f compose.prefect.yaml up -d
 export PREFECT_API_URL=http://127.0.0.1:4200/api
 uv run garmin-orchestrator deploy
-uv run prefect worker start --pool garmin
+prefect worker start --pool garmin --name garmin-worker
 ```
+
+The worker can run from the Nix-managed Prefect environment, but it must have
+`uv`, `git`, and `ssh` on `PATH`, a Python 3.13 interpreter available to uv,
+and SSH access to `git@github.com:kusold/garmin-postgres.git`. The GitHub
+deployment workflow exports `PREFECT_GARMIN_COMMIT_SHA=${GITHUB_SHA}` before
+running `prefect deploy`; `prefect.yaml` templates that SHA into the process
+job command.
+
+```bash
+PREFECT_API_URL=http://prefect.svc.rockymtn.org/api \
+  prefect worker start --pool garmin --name garmin-worker
+```
+
+This keeps the application dependency environment in the deployment instead of
+the worker service. The worker's Python only needs to start Prefect and execute
+the configured process command. The child flow process runs through
+`uv run --no-project --with ... python -m prefect.engine`, with the three local
+workspace packages installed from the exact Git commit supplied by the GitHub
+Action. After a restart, confirm Prefect shows only the current worker online
+for the `garmin` pool before starting new runs. An old worker can claim runs
+with stale job variables.
 
 GitHub deployment setup:
 
 The `Deploy Prefect` workflow runs on GitHub-hosted Ubuntu runners, joins the
-tailnet with `tailscale/github-action`, installs the uv workspace, and registers
-all deployments from `prefect.yaml` to the existing `garmin` work pool. It
+tailnet with `tailscale/github-action`, installs the uv workspace, exports the
+GitHub commit SHA for deployment templating, and registers all deployments from
+`prefect.yaml` to the existing `garmin` work pool. It
 deploys on pushes to `main` that affect the orchestrator, Garmin sync package,
 shared core package, or deployment metadata. The `garmin` worker and work pool
 are managed outside this workflow.
