@@ -41,8 +41,5 @@ jobs:
             set -euo pipefail
 
             uv sync --locked --all-packages
-            if ! uv run prefect work-pool inspect garmin-local-process >/dev/null 2>&1; then
-              uv run prefect --no-prompt work-pool create --type process garmin-local-process
-            fi
             uv run prefect --no-prompt deploy --all --version \"\${GITHUB_SHA}\"
           "
