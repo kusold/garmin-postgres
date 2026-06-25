@@ -23,23 +23,40 @@ concurrency:
 jobs:
   deploy:
     name: Deploy Prefect deployments
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
 
     env:
-      NIX_CONFIG: experimental-features = nix-command flakes
       PREFECT_API_URL: ${{ vars.PREFECT_API_URL || 'http://prefect.svc.rockymtn.org/api' }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Connect to tailnet
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          audience: ${{ secrets.TS_AUDIENCE }}
+          tags: tag:github-actions-prefect-deploy
+          ping: prefect.svc.rockymtn.org
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: pyproject.toml
+
       - name: Deploy Prefect project
         run: |
           export UV_CACHE_DIR="${RUNNER_TEMP}/uv-cache"
 
-          nix develop --command bash -c "
-            set -euo pipefail
-
-            uv sync --locked --all-packages
-            uv run prefect --no-prompt deploy --all --version \"\${GITHUB_SHA}\"
-          "
+          uv sync --locked --all-packages
+          uv run prefect --no-prompt deploy --all --version "${GITHUB_SHA}"
