@@ -31,10 +31,14 @@ deploys on pushes to `main` that affect the orchestrator, Garmin sync package,
 shared core package, or deployment metadata. The `garmin` worker and work pool
 are managed outside this workflow.
 
-Required GitHub secrets:
+Required GitHub secrets for the Tailscale OAuth client:
 
-- `TS_OAUTH_CLIENT_ID` - Tailscale workload identity federation client ID
-- `TS_AUDIENCE` - Tailscale workload identity federation audience
+- `TS_OAUTH_CLIENT_ID` - Tailscale OAuth client ID
+- `TS_OAUTH_SECRET` - Tailscale OAuth client secret
+
+The OAuth client must be allowed to create ephemeral auth keys for
+`tag:github-actions-prefect-deploy`. In Tailscale terms, grant the OAuth client
+the `auth_keys` scope and the `tag:github-actions-prefect-deploy` tag.
 
 Recommended Tailscale access:
 
