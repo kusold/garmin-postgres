@@ -18,17 +18,18 @@ Local deployment setup:
 ```bash
 podman compose -f compose.yaml -f compose.prefect.yaml up -d
 export PREFECT_API_URL=http://127.0.0.1:4200/api
-uv run prefect work-pool create --type process garmin-local-process
 uv run garmin-orchestrator deploy
-uv run prefect worker start --pool garmin-local-process
+uv run prefect worker start --pool garmin
 ```
 
 GitHub deployment setup:
 
 The `Deploy Prefect` workflow runs on the `self-hosted` runner label and uses
 the repo's Nix shell to install the uv workspace before registering all
-deployments from `prefect.yaml`. It deploys on pushes to `main` that affect the
-orchestrator, Garmin sync package, shared core package, or deployment metadata.
+deployments from `prefect.yaml` to the existing `garmin` work pool. It deploys
+on pushes to `main` that affect the orchestrator, Garmin sync package, shared
+core package, or deployment metadata. The `garmin` worker and work pool are
+managed outside this workflow.
 
 By default the workflow deploys to:
 
