@@ -23,6 +23,21 @@ uv run garmin-orchestrator deploy
 uv run prefect worker start --pool garmin-local-process
 ```
 
+GitHub deployment setup:
+
+The `Deploy Prefect` workflow runs on the `self-hosted` runner label and uses
+the repo's Nix shell to install the uv workspace before registering all
+deployments from `prefect.yaml`. It deploys on pushes to `main` that affect the
+orchestrator, Garmin sync package, shared core package, or deployment metadata.
+
+By default the workflow deploys to:
+
+```bash
+http://prefect.svc.rockymtn.org/api
+```
+
+Set a repository variable named `PREFECT_API_URL` to override that target.
+
 Once Prefect deployments are active, Prefect should own scheduling. Keep
 systemd for supervising the local Prefect worker instead of also running the
 old direct `garmin-sync ingest run` timer.

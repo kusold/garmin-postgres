@@ -1,0 +1,47 @@
+name: Deploy Prefect
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/deploy-prefect.yml"
+      - "prefect.yaml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "flake.nix"
+      - "flake.lock"
+      - "apps/garmin-orchestrator/**"
+      - "apps/garmin-sync/**"
+      - "packages/garmin-postgres-core/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy Prefect deployments
+    runs-on: self-hosted
+
+    env:
+      NIX_CONFIG: experimental-features = nix-command flakes
+      PREFECT_API_URL: ${{ vars.PREFECT_API_URL || 'http://prefect.svc.rockymtn.org/api' }}
+      UV_CACHE_DIR: ${{ runner.temp }}/uv-cache
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Deploy Prefect project
+        run: |
+          nix develop --command bash -c '
+            set -euo pipefail
+
+            uv sync --locked --all-packages
+            if ! uv run prefect work-pool inspect garmin-local-process >/dev/null 2>&1; then
+              uv run prefect --no-prompt work-pool create --type process garmin-local-process
+            fi
+            uv run prefect --no-prompt deploy --all --version "$GITHUB_SHA"
+          '
