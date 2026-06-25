@@ -28,7 +28,6 @@ jobs:
     env:
       NIX_CONFIG: experimental-features = nix-command flakes
       PREFECT_API_URL: ${{ vars.PREFECT_API_URL || 'http://prefect.svc.rockymtn.org/api' }}
-      UV_CACHE_DIR: ${{ runner.temp }}/uv-cache
 
     steps:
       - name: Check out repository
@@ -36,12 +35,14 @@ jobs:
 
       - name: Deploy Prefect project
         run: |
-          nix develop --command bash -c '
+          export UV_CACHE_DIR="${RUNNER_TEMP}/uv-cache"
+
+          nix develop --command bash -c "
             set -euo pipefail
 
             uv sync --locked --all-packages
             if ! uv run prefect work-pool inspect garmin-local-process >/dev/null 2>&1; then
               uv run prefect --no-prompt work-pool create --type process garmin-local-process
             fi
-            uv run prefect --no-prompt deploy --all --version "$GITHUB_SHA"
-          '
+            uv run prefect --no-prompt deploy --all --version \"\${GITHUB_SHA}\"
+          "
