@@ -18,18 +18,24 @@ Local deployment setup:
 ```bash
 podman compose -f compose.yaml -f compose.prefect.yaml up -d
 export PREFECT_API_URL=http://127.0.0.1:4200/api
+export GARMIN_POSTGRES_IMAGE=garmin-postgres:local
+docker build -t "${GARMIN_POSTGRES_IMAGE}" .
+uv run --package garmin-orchestrator prefect work-pool create garmin-docker --type docker --overwrite
 uv run garmin-orchestrator deploy
-uv run prefect worker start --pool garmin
+uv run --package garmin-orchestrator prefect worker start --pool garmin-docker
 ```
 
 GitHub deployment setup:
 
 The `Deploy Prefect` workflow runs on GitHub-hosted Ubuntu runners, joins the
-tailnet with `tailscale/github-action`, installs the uv workspace, and registers
-all deployments from `prefect.yaml` to the existing `garmin` work pool. It
-deploys on pushes to `main` that affect the orchestrator, Garmin sync package,
-shared core package, or deployment metadata. The `garmin` worker and work pool
-are managed outside this workflow.
+tailnet with `tailscale/github-action`, builds and pushes a Docker image to
+GitHub Container Registry, installs the uv workspace, and registers all
+deployments from `prefect.yaml` to the existing `garmin-docker` Docker work
+pool. It deploys on pushes to `main` that affect the orchestrator, Garmin sync
+package, shared core package, Docker image metadata, or deployment metadata.
+The Docker worker, work pool, network access, runtime environment variables
+such as `DATABASE_URL`, and any GHCR pull credentials are managed outside this
+workflow.
 
 Required GitHub secrets for the Tailscale OAuth client:
 
@@ -86,6 +92,12 @@ http://prefect.svc.rockymtn.org/api
 ```
 
 Set a repository variable named `PREFECT_API_URL` to override that target.
+
+The workflow tags images as:
+
+```bash
+ghcr.io/<owner>/<repo>:sha-<commit-sha>
+```
 
 Once Prefect deployments are active, Prefect should own scheduling. Keep
 systemd for supervising the local Prefect worker instead of also running the
