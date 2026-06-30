@@ -10,9 +10,12 @@ pull:
 
 definitions:
   work_pools:
-    garmin: &garmin
-      name: garmin
+    garmin_docker: &garmin_docker
+      name: garmin-docker
       work_queue_name: default
+      job_variables:
+        image: "{{ $GARMIN_POSTGRES_IMAGE }}"
+        image_pull_policy: Always
   schedules:
     twice_daily: &twice_daily
       cron: "0 6,18 * * *"
@@ -27,7 +30,7 @@ deployments:
       data_types: null
       dry_run: false
       fail_on_partial: false
-    work_pool: *garmin
+    work_pool: *garmin_docker
 
   - name: daily-summary
     entrypoint: garmin_orchestrator.flows.garmin_archive_flow
@@ -37,7 +40,7 @@ deployments:
         - daily_summary
       dry_run: false
       fail_on_partial: false
-    work_pool: *garmin
+    work_pool: *garmin_docker
 
   - name: activities
     entrypoint: garmin_orchestrator.flows.garmin_archive_flow
@@ -49,7 +52,7 @@ deployments:
       fail_on_partial: false
       include_details: true
       include_files: true
-    work_pool: *garmin
+    work_pool: *garmin_docker
 
   - name: personal-records
     entrypoint: garmin_orchestrator.flows.garmin_archive_flow
@@ -59,7 +62,7 @@ deployments:
         - personal_records
       dry_run: false
       fail_on_partial: false
-    work_pool: *garmin
+    work_pool: *garmin_docker
 
   - name: backfill
     entrypoint: garmin_orchestrator.flows.garmin_archive_flow
@@ -68,4 +71,4 @@ deployments:
       data_types: null
       dry_run: false
       fail_on_partial: false
-    work_pool: *garmin
+    work_pool: *garmin_docker
