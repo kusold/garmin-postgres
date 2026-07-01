@@ -16,6 +16,8 @@ definitions:
       job_variables:
         image: "{{ $GARMIN_POSTGRES_IMAGE }}"
         image_pull_policy: Always
+        volumes:
+          - "{{ $GARMIN_CONNECT_ENV_FILE }}:/app/.env:ro"
   schedules:
     twice_daily: &twice_daily
       cron: "0 6,18 * * *"

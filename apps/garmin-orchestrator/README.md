@@ -19,6 +19,7 @@ Local deployment setup:
 podman compose -f compose.yaml -f compose.prefect.yaml up -d
 export PREFECT_API_URL=http://127.0.0.1:4200/api
 export GARMIN_POSTGRES_IMAGE=garmin-postgres:local
+export GARMIN_CONNECT_ENV_FILE="${PWD}/.env"
 docker build -t "${GARMIN_POSTGRES_IMAGE}" .
 uv run --package garmin-orchestrator prefect work-pool create garmin-docker --type docker --overwrite
 uv run garmin-orchestrator deploy
@@ -33,9 +34,22 @@ GitHub Container Registry, installs the uv workspace, and registers all
 deployments from `prefect.yaml` to the existing `garmin-docker` Docker work
 pool. It deploys on pushes to `main` that affect the orchestrator, Garmin sync
 package, shared core package, Docker image metadata, or deployment metadata.
-The Docker worker, work pool, network access, runtime environment variables
-such as `DATABASE_URL`, and any GHCR pull credentials are managed outside this
-workflow.
+The Docker worker, work pool, network access, and any GHCR pull credentials are
+managed outside this workflow.
+
+Runtime secrets are loaded from a worker-local env file rather than GitHub
+Actions secrets. The production worker exposes its Garmin env file at:
+
+```bash
+/var/lib/prefect-worker-garmin-docker/garmin-connect.env
+```
+
+`prefect.yaml` mounts the configured `GARMIN_CONNECT_ENV_FILE` into each Docker
+job container at `/app/.env`, allowing the existing settings loader to read
+values such as `DATABASE_URL`. The deploy workflow only passes the file path,
+defaulting to the production path above. Set a repository variable named
+`GARMIN_CONNECT_ENV_FILE` to override the path without changing deployment
+metadata.
 
 Required GitHub secrets for the Tailscale OAuth client:
 
