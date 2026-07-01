@@ -84,6 +84,7 @@ jobs:
 
       - name: Deploy Prefect project
         env:
+          GARMIN_CONNECT_ENV_FILE: ${{ vars.GARMIN_CONNECT_ENV_FILE || '/var/lib/prefect-worker-garmin-docker/garmin-connect.env' }}
           GARMIN_POSTGRES_IMAGE: ${{ steps.meta.outputs.tags }}
         run: |
           export UV_CACHE_DIR="${RUNNER_TEMP}/uv-cache"
