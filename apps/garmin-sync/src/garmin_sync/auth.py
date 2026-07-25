@@ -33,7 +33,17 @@ def _fetch_profile(garmin: Garmin) -> dict:
     if hasattr(garmin, "client") and hasattr(garmin.client, "connectapi"):
         return garmin.client.connectapi("/userprofile-service/socialProfile")
     if hasattr(garmin, "garth") and hasattr(garmin.garth, "connectapi"):
-        return garmin.garth.connectapi("/userprofile-service/userprofile/profile")
+        profile = getattr(garmin.garth, "profile", None)
+        if isinstance(profile, dict):
+            return profile
+        for path in (
+            "/userprofile-service/socialProfile",
+            "/userprofile-service/userprofile/profile",
+        ):
+            try:
+                return garmin.garth.connectapi(path)
+            except Exception:
+                continue
     raise RuntimeError("Garmin client does not support profile loading")
 
 
