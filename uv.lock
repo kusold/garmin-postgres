@@ -578,22 +578,34 @@ dependencies = [
 requires-dist = [
     { name = "curl-cffi", specifier = ">=0.15.0" },
     { name = "garmin-postgres-core", editable = "packages/garmin-postgres-core" },
-    { name = "garminconnect", specifier = ">=0.2.25" },
+    { name = "garminconnect", specifier = "==0.2.40" },
     { name = "typer", specifier = ">=0.15.0" },
 ]
 
 [[package]]
 name = "garminconnect"
-version = "0.3.3"
+version = "0.2.40"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "curl-cffi" },
-    { name = "requests" },
-    { name = "ua-generator" },
+    { name = "garth" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/dd/d9/7ad240d86453de083f0c460ee328e8209232d9d0ee099dcf49439d90be7a/garminconnect-0.3.3.tar.gz", hash = "sha256:f608193d7a90079fa1fd1d86e8d10e88b871b6ab2500372a9dc48358f8c2d386", size = 52234, upload-time = "2026-04-22T12:57:24.79Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5c/98/929549ceb22dd4e74f32d00f1b591c34a30b5d7d7b69c0101babc2f3dd6d/garminconnect-0.2.40.tar.gz", hash = "sha256:f077ce27b68686c9347cb2209e1ea86dc6ce13d5d9018f3c5b0436cd79e74ce0", size = 40301, upload-time = "2026-03-16T18:56:41.865Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d2/5a/69af564ff61c87a725e0a6b6ceed4a01569a1caced2c136042c778907244/garminconnect-0.3.3-py3-none-any.whl", hash = "sha256:e11dbbddf20abd60d5c8fbde1e7c688ca175a905237dfec8837ee935a1aca803", size = 47814, upload-time = "2026-04-22T12:57:23.175Z" },
+    { url = "https://files.pythonhosted.org/packages/9d/b7/29be14ca416752597d4934a326b68af281424fee99a521a4bc0596e4f198/garminconnect-0.2.40-py3-none-any.whl", hash = "sha256:121d55ca898e3e14a8ed8b56df7add285e909dbe4a9325063749fca17a4ceaf9", size = 35142, upload-time = "2026-03-16T18:56:40.72Z" },
+]
+
+[[package]]
+name = "garth"
+version = "0.6.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "requests" },
+    { name = "requests-oauthlib" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/20/88/7b9cb1bd266acdab2b83444e6271ed1655d097713ef00b5f2c99ddb8f9c0/garth-0.6.3.tar.gz", hash = "sha256:519d4b532944638652bb740ee44dcf36e1d234321aecf085edd7f1a81ea66f69", size = 1937267, upload-time = "2026-01-15T21:10:04.559Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1f/3e/050303556452f2bd5b235568c13013ead94458565f1664ea3494fc1ad1d1/garth-0.6.3-py3-none-any.whl", hash = "sha256:9a02b323bf3cad5950594a1a8fc172a5ebed5b151223d261cefd199260b997f5", size = 43170, upload-time = "2026-01-15T21:10:02.795Z" },
 ]
 
 [[package]]
@@ -1962,15 +1974,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/48/55/15e2340963d2bfedcc6042da3911438fd336f8ae96b65bdbe3a29766da0c/tzlocal-5.4.3.tar.gz", hash = "sha256:3a8c9bc18cf47e1dcde252ea0e6a72a6cde320a400b6ac6db1f1f8cccd553c00", size = 30873, upload-time = "2026-06-17T04:17:41.764Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/42/28/fc144409c71569e928585f8f3c629d80d1ca3ef40175e9222f01588f98c9/tzlocal-5.4.3-py3-none-any.whl", hash = "sha256:24ce97bb58e2a973f7640ec2553ab4e6f6d5a0d0d1aa9dc43bca21d89e1feb82", size = 18039, upload-time = "2026-06-17T04:17:40.027Z" },
-]
-
-[[package]]
-name = "ua-generator"
-version = "2.1.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/fd/18/94a49b14a37d68fec4ad4633c1985f300e6e8393024ebfe6794d0cdb1e55/ua_generator-2.1.0.tar.gz", hash = "sha256:34a68f9860965ad710ae91c1ae91c33a121f505f298efb1652bdc19e01b7d79d", size = 29617, upload-time = "2026-05-09T22:21:19.683Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/07/16/fa4e612e5b34e3161001c0d4223fbd677c25b7916042b45d07bbe3ed6c5c/ua_generator-2.1.0-py3-none-any.whl", hash = "sha256:c23ddba84c1cf46bf12d7f44ad0a5a247760601c776f1cc0be02e2570626ebc3", size = 32758, upload-time = "2026-05-09T22:21:18.177Z" },
 ]
 
 [[package]]

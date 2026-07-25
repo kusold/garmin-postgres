@@ -11,6 +11,32 @@ from garmin_postgres.models.user import User
 logger = logging.getLogger(__name__)
 
 
+def _dump_tokens(garmin: Garmin) -> str:
+    if hasattr(garmin, "client") and hasattr(garmin.client, "dumps"):
+        return garmin.client.dumps()
+    if hasattr(garmin, "garth") and hasattr(garmin.garth, "dumps"):
+        return garmin.garth.dumps()
+    raise RuntimeError("Garmin client does not support token serialization")
+
+
+def _load_tokens(garmin: Garmin, tokens_json: str) -> None:
+    if hasattr(garmin, "client") and hasattr(garmin.client, "loads"):
+        garmin.client.loads(tokens_json)
+        return
+    if hasattr(garmin, "garth") and hasattr(garmin.garth, "loads"):
+        garmin.login(tokens_json)
+        return
+    raise RuntimeError("Garmin client does not support token loading")
+
+
+def _fetch_profile(garmin: Garmin) -> dict:
+    if hasattr(garmin, "client") and hasattr(garmin.client, "connectapi"):
+        return garmin.client.connectapi("/userprofile-service/socialProfile")
+    if hasattr(garmin, "garth") and hasattr(garmin.garth, "connectapi"):
+        return garmin.garth.connectapi("/userprofile-service/userprofile/profile")
+    raise RuntimeError("Garmin client does not support profile loading")
+
+
 def login_interactive(email: str | None = None) -> Garmin:
     if not email:
         email = input("Garmin email: ")
@@ -28,7 +54,7 @@ def login_interactive(email: str | None = None) -> Garmin:
 
 
 def upsert_user(session: Session, garmin: Garmin) -> User:
-    profile = garmin.client.connectapi("/userprofile-service/socialProfile")
+    profile = _fetch_profile(garmin)
 
     if not garmin.display_name:
         garmin.display_name = profile.get("displayName")
@@ -39,7 +65,7 @@ def upsert_user(session: Session, garmin: Garmin) -> User:
     stmt = select(User).where(User.garmin_display_name == display_name)
     existing = session.scalars(stmt).first()
 
-    tokens = garmin.client.dumps()
+    tokens = _dump_tokens(garmin)
 
     if existing:
         existing.garmin_display_name = display_name
@@ -65,8 +91,9 @@ def load_user_client(session: Session, user: User) -> Garmin | None:
 
     try:
         garmin = Garmin()
-        garmin.client.loads(user.tokens_json)
-        garmin.display_name = user.garmin_display_name
+        _load_tokens(garmin, user.tokens_json)
+        if not garmin.display_name:
+            garmin.display_name = user.garmin_display_name
         return garmin
     except Exception:
         logger.warning("Failed to load tokens for user %s", user.garmin_display_name)
@@ -74,7 +101,7 @@ def load_user_client(session: Session, user: User) -> Garmin | None:
 
 
 def save_tokens(session: Session, user: User, garmin: Garmin) -> None:
-    user.tokens_json = garmin.client.dumps()
+    user.tokens_json = _dump_tokens(garmin)
     session.add(user)
     session.commit()
 
