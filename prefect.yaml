@@ -28,6 +28,9 @@ deployments:
     entrypoint: garmin_orchestrator.flows.garmin_archive_flow
     description: Twice-daily Garmin archive ingestion for all object types.
     schedule: *twice_daily
+    concurrency_limit:
+      limit: 1
+      collision_strategy: ENQUEUE
     parameters:
       data_types: null
       dry_run: false
@@ -37,6 +40,9 @@ deployments:
   - name: daily-summary
     entrypoint: garmin_orchestrator.flows.garmin_archive_flow
     description: Daily summary ingestion only.
+    concurrency_limit:
+      limit: 1
+      collision_strategy: ENQUEUE
     parameters:
       data_types:
         - daily_summary
@@ -47,6 +53,9 @@ deployments:
   - name: activities
     entrypoint: garmin_orchestrator.flows.garmin_archive_flow
     description: Activity ingestion only.
+    concurrency_limit:
+      limit: 1
+      collision_strategy: ENQUEUE
     parameters:
       data_types:
         - activities
@@ -59,6 +68,9 @@ deployments:
   - name: personal-records
     entrypoint: garmin_orchestrator.flows.garmin_archive_flow
     description: Personal records ingestion only.
+    concurrency_limit:
+      limit: 1
+      collision_strategy: ENQUEUE
     parameters:
       data_types:
         - personal_records
@@ -69,6 +81,9 @@ deployments:
   - name: backfill
     entrypoint: garmin_orchestrator.flows.garmin_archive_flow
     description: Manual historical backfill with explicit dates or days_back.
+    concurrency_limit:
+      limit: 1
+      collision_strategy: ENQUEUE
     parameters:
       data_types: null
       dry_run: false

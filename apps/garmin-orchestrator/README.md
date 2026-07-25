@@ -4,6 +4,136 @@ Prefect orchestration for the Garmin archive. This app wraps the existing
 `garmin-sync` object runners without moving SQLModel sessions, Garmin clients,
 or ORM objects across task boundaries.
 
+## Flow topology
+
+No deployment calls another deployment. All five invoke the shared
+`garmin-archive` parent flow with different schedules and default parameters.
+The parent invokes one `garmin-archive-user` child flow at a time, and each
+child runs its selected object branches sequentially.
+
+```mermaid
+flowchart TB
+    subgraph DEPLOYMENTS["Prefect deployments"]
+        direction LR
+        INC["incremental<br/>Scheduled 06:00 and 18:00<br/>All object types"]
+        DAILY["daily-summary<br/>Manual<br/>Daily summaries only"]
+        ACTIVITIES["activities<br/>Manual<br/>Activities only<br/>Details and FIT files enabled"]
+        RECORDS["personal-records<br/>Manual<br/>Personal records only"]
+        BACKFILL["backfill<br/>Manual<br/>All object types<br/>Dates may be supplied at runtime"]
+    end
+
+    DEPLOY_LIMIT["Each deployment<br/>concurrency limit = 1<br/>collision strategy = ENQUEUE"]
+    DEPLOY_LIMIT -.-> INC
+    DEPLOY_LIMIT -.-> DAILY
+    DEPLOY_LIMIT -.-> ACTIVITIES
+    DEPLOY_LIMIT -.-> RECORDS
+    DEPLOY_LIMIT -.-> BACKFILL
+
+    INC -->|"data_types = null"| ARCHIVE
+    DAILY -->|"daily_summary"| ARCHIVE
+    ACTIVITIES -->|"activities"| ARCHIVE
+    RECORDS -->|"personal_records"| ARCHIVE
+    BACKFILL -->|"data_types = null"| ARCHIVE
+
+    subgraph PARENT["Parent flow: garmin-archive"]
+        ARCHIVE(["garmin_archive_flow"])
+        DB["1. ensure-database-ready task<br/>Connect to PostgreSQL<br/>Run Alembic upgrade to head"]
+        WINDOW["2. resolve-date-window task<br/>Use explicit dates or days_back<br/>Otherwise configured lookback<br/>End defaults to yesterday"]
+        TYPES["3. Normalize data types<br/>null becomes:<br/>daily summary → activities → personal records"]
+        USERS["4. resolve-active-users task<br/>Optionally filter by display name"]
+        USER_LOOP{{"5. For each active user<br/>sequentially"}}
+
+        ARCHIVE --> DB --> WINDOW --> TYPES --> USERS --> USER_LOOP
+    end
+
+    subgraph CHILD["Child flow: garmin-archive-user"]
+        USER_START(["Start user"])
+
+        DAILY_SELECTED{"daily_summary selected?"}
+        DAILY_LOOP["For each date<br/>sequentially"]
+        DAILY_TASK["daily-summary-user-date<br/>Fetch Garmin summary → parse<br/>Upsert unless dry-run → save tokens"]
+        DAILY_STATE["Inspect terminal task state<br/>Completed → result<br/>Failed after retries → error result"]
+        DAILY_AGG["Aggregate all date results"]
+
+        ACT_SELECTED{"activities selected?"}
+        ACT_LIST["activity-list-user-window<br/>Fetch activity summaries for window<br/>Save tokens unless dry-run"]
+        ACT_LIST_STATE{"List task completed?"}
+        ACT_LOOP["For each activity<br/>sequentially"]
+        ACT_SUMMARY["activity-summary-user-id<br/>Fetch full activity or use list fallback<br/>Parse → upsert unless dry-run → save tokens"]
+        ACT_SUMMARY_STATE{"Summary task successful?"}
+        DETAIL_SELECTED{"include_details?"}
+        ACT_DETAIL["activity-detail-user-id<br/>Fetch chart and polyline detail<br/>Upsert unless dry-run → save tokens"]
+        DETAIL_STATE["Inspect terminal state<br/>Failure becomes an item error<br/>Continue to FIT step"]
+        FILE_SELECTED{"include_files<br/>and not dry-run?"}
+        ACT_FILE["activity-file-user-id<br/>Download original FIT file<br/>Upsert file → save tokens"]
+        FILE_STATE["Inspect terminal state<br/>Failure becomes an item error"]
+        ACT_ITEM_AGG["Aggregate summary, detail,<br/>and FIT results for activity"]
+        ACT_AGG["Aggregate all activity results"]
+
+        PR_SELECTED{"personal_records selected?"}
+        PR_TASK["personal-records-user<br/>Fetch current snapshot<br/>Parse and upsert each record<br/>Count row errors → save tokens"]
+        PR_STATE["Inspect terminal task state<br/>Preserve success, partial, or error"]
+
+        USER_RESULT["Return per-user object results"]
+
+        USER_START --> DAILY_SELECTED
+        DAILY_SELECTED -->|"yes"| DAILY_LOOP --> DAILY_TASK --> DAILY_STATE --> DAILY_AGG --> ACT_SELECTED
+        DAILY_SELECTED -->|"no"| ACT_SELECTED
+
+        ACT_SELECTED -->|"yes"| ACT_LIST --> ACT_LIST_STATE
+        ACT_LIST_STATE -->|"failed after retries"| ACT_AGG
+        ACT_LIST_STATE -->|"completed"| ACT_LOOP --> ACT_SUMMARY --> ACT_SUMMARY_STATE
+        ACT_SUMMARY_STATE -->|"failed after retries"| ACT_ITEM_AGG
+        ACT_SUMMARY_STATE -->|"success"| DETAIL_SELECTED
+        DETAIL_SELECTED -->|"yes"| ACT_DETAIL --> DETAIL_STATE --> FILE_SELECTED
+        DETAIL_SELECTED -->|"no"| FILE_SELECTED
+        FILE_SELECTED -->|"yes"| ACT_FILE --> FILE_STATE --> ACT_ITEM_AGG
+        FILE_SELECTED -->|"no"| ACT_ITEM_AGG
+        ACT_ITEM_AGG -->|"next activity"| ACT_LOOP
+        ACT_ITEM_AGG -->|"all activities"| ACT_AGG
+        ACT_SELECTED -->|"no"| PR_SELECTED
+        ACT_AGG --> PR_SELECTED
+
+        PR_SELECTED -->|"yes"| PR_TASK --> PR_STATE --> USER_RESULT
+        PR_SELECTED -->|"no"| USER_RESULT
+    end
+
+    API_LIMIT["Shared garmin-api task-tag limit = 1<br/>Serializes Garmin calls across all deployments"]
+    API_LIMIT -.-> DAILY_TASK
+    API_LIMIT -.-> ACT_LIST
+    API_LIMIT -.-> ACT_SUMMARY
+    API_LIMIT -.-> ACT_DETAIL
+    API_LIMIT -.-> ACT_FILE
+    API_LIMIT -.-> PR_TASK
+
+    USER_LOOP --> USER_START
+    USER_RESULT --> MORE_USERS{"More users?"}
+    MORE_USERS -->|"yes"| USER_START
+    MORE_USERS -->|"no"| COUNT["Count error and partial objects"]
+    COUNT --> ARTIFACT["Publish garmin-archive-summary<br/>Markdown artifact"]
+    ARTIFACT --> POLICY{"Errors, or partials with<br/>fail_on_partial = true?"}
+    POLICY -->|"yes"| FAILED(["Fail parent flow"])
+    POLICY -->|"no"| COMPLETE(["Return structured summary"])
+
+    classDef deployment fill:#dbeafe,stroke:#2563eb,color:#172554
+    classDef flow fill:#ede9fe,stroke:#7c3aed,color:#2e1065
+    classDef task fill:#dcfce7,stroke:#16a34a,color:#052e16
+    classDef decision fill:#fef3c7,stroke:#d97706,color:#451a03
+    classDef policy fill:#fee2e2,stroke:#dc2626,color:#450a0a
+
+    class INC,DAILY,ACTIVITIES,RECORDS,BACKFILL deployment
+    class ARCHIVE,USER_START flow
+    class DB,WINDOW,USERS,DAILY_TASK,ACT_LIST,ACT_SUMMARY,ACT_DETAIL,ACT_FILE,PR_TASK task
+    class USER_LOOP,DAILY_SELECTED,ACT_SELECTED,ACT_LIST_STATE,ACT_SUMMARY_STATE,DETAIL_SELECTED,FILE_SELECTED,PR_SELECTED,MORE_USERS,POLICY decision
+    class DEPLOY_LIMIT,API_LIMIT policy
+```
+
+Garmin-facing tasks retry up to three times with delays of 60, 300, and 900
+seconds. After retries are exhausted, the child flow records an error result
+and continues with independent work. Activity detail failure therefore does
+not prevent the FIT download task from running. The final parent-flow policy
+decides whether the collected results should fail the run.
+
 Local flow runs:
 
 ```bash
@@ -112,6 +242,18 @@ The workflow tags images as:
 ```bash
 ghcr.io/<owner>/<repo>:sha-<commit-sha>
 ```
+
+Each deployment allows one active run and enqueues collisions. The deploy
+workflow also configures the shared `garmin-api` task-tag concurrency limit to
+`1`, which serializes Garmin API calls across incremental, manual, and backfill
+runs. This protects per-user token refresh writes even when different
+deployments overlap.
+
+Activity summary, activity detail, and FIT download work run as separate
+Prefect tasks so each failure boundary can retry independently. The parent flow
+continues after exhausted item-level retries, publishes a
+`garmin-archive-summary` Markdown artifact, and then applies the configured
+error/partial failure policy.
 
 Once Prefect deployments are active, Prefect should own scheduling. Keep
 systemd for supervising the local Prefect worker instead of also running the

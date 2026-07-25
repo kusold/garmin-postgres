@@ -19,6 +19,8 @@ from garmin_sync.ingest.date_windows import resolve_date_window
 from garmin_sync.ingest.results import IngestResult
 from garmin_sync.ingest.runners import (
     ingest_activity,
+    ingest_activity_detail,
+    ingest_activity_file,
     ingest_daily_summary_day,
     ingest_personal_records,
     list_activity_summaries,
@@ -94,6 +96,7 @@ def resolve_active_users_task(user_filter: str | None = None) -> list[dict[str, 
 
 @task(
     name="ingest-daily-summary-day",
+    task_run_name="daily-summary-{user_id}-{calendar_date}",
     retries=GARMIN_API_RETRIES,
     retry_delay_seconds=GARMIN_API_RETRY_DELAYS,
     tags=GARMIN_API_TAGS,
@@ -116,6 +119,7 @@ def ingest_daily_summary_day_task(
 
 @task(
     name="list-activity-summaries",
+    task_run_name="activity-list-{user_id}-{start_date}-{end_date}",
     retries=GARMIN_API_RETRIES,
     retry_delay_seconds=GARMIN_API_RETRY_DELAYS,
     tags=GARMIN_API_TAGS,
@@ -137,18 +141,17 @@ def list_activity_summaries_task(
 
 
 @task(
-    name="ingest-activity",
+    name="ingest-activity-summary",
+    task_run_name="activity-summary-{user_id}-{activity_id}",
     retries=GARMIN_API_RETRIES,
     retry_delay_seconds=GARMIN_API_RETRY_DELAYS,
     tags=GARMIN_API_TAGS,
 )
-def ingest_activity_task(
+def ingest_activity_summary_task(
     *,
     user_id: int,
     activity_id: int,
     dry_run: bool = False,
-    include_details: bool = True,
-    include_files: bool = True,
     activity_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return _result_dict(
@@ -156,8 +159,8 @@ def ingest_activity_task(
             user_id=user_id,
             activity_id=activity_id,
             dry_run=dry_run,
-            include_details=include_details,
-            include_files=include_files,
+            include_details=False,
+            include_files=False,
             activity_summary=activity_summary,
             raise_on_error=True,
         )
@@ -165,7 +168,54 @@ def ingest_activity_task(
 
 
 @task(
+    name="ingest-activity-detail",
+    task_run_name="activity-detail-{user_id}-{activity_id}",
+    retries=GARMIN_API_RETRIES,
+    retry_delay_seconds=GARMIN_API_RETRY_DELAYS,
+    tags=GARMIN_API_TAGS,
+)
+def ingest_activity_detail_task(
+    *,
+    user_id: int,
+    activity_id: int,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    return _result_dict(
+        ingest_activity_detail(
+            user_id=user_id,
+            activity_id=activity_id,
+            dry_run=dry_run,
+            raise_on_error=True,
+        )
+    )
+
+
+@task(
+    name="download-activity-file",
+    task_run_name="activity-file-{user_id}-{activity_id}",
+    retries=GARMIN_API_RETRIES,
+    retry_delay_seconds=GARMIN_API_RETRY_DELAYS,
+    tags=GARMIN_API_TAGS,
+)
+def ingest_activity_file_task(
+    *,
+    user_id: int,
+    activity_id: int,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    return _result_dict(
+        ingest_activity_file(
+            user_id=user_id,
+            activity_id=activity_id,
+            dry_run=dry_run,
+            raise_on_error=True,
+        )
+    )
+
+
+@task(
     name="ingest-personal-records",
+    task_run_name="personal-records-{user_id}",
     retries=GARMIN_API_RETRIES,
     retry_delay_seconds=GARMIN_API_RETRY_DELAYS,
     tags=GARMIN_API_TAGS,
