@@ -4,8 +4,9 @@ import logging
 from datetime import date
 from typing import Any
 
-from prefect import flow
+from prefect import flow, get_run_logger
 from prefect.artifacts import create_markdown_artifact
+from prefect.exceptions import MissingContextError
 
 from garmin_sync.ingest.date_windows import iter_dates
 from garmin_sync.ingest.object_registry import (
@@ -31,6 +32,14 @@ from garmin_orchestrator.tasks import (
 
 RESULT_METADATA_KEYS = {"status", "rows", "errors", "error"}
 logger = logging.getLogger(__name__)
+
+
+def _get_logger():
+    """Use Prefect's run logger, while keeping direct function calls usable."""
+    try:
+        return get_run_logger()
+    except MissingContextError:
+        return logger
 
 
 def _dict_to_ingest_result(data_type: str, result: dict[str, Any]) -> IngestResult:
@@ -191,9 +200,29 @@ def garmin_archive_user_flow(
     include_files: bool = True,
 ) -> dict[str, Any]:
     user_id = int(user_ref["id"])
+    run_logger = _get_logger()
     result: dict[str, Any] = {"user": user_ref["display_name"]}
 
+    run_logger.info(
+        "Starting archive for user=%s user_id=%s window=%s..%s data_types=%s "
+        "dry_run=%s include_details=%s include_files=%s",
+        user_ref["display_name"],
+        user_id,
+        start_date,
+        end_date,
+        data_types,
+        dry_run,
+        include_details,
+        include_files,
+    )
+
     if DAILY_SUMMARY in data_types:
+        day_count = (end_date - start_date).days + 1
+        run_logger.info(
+            "Ingesting %s daily summary day(s) for user=%s",
+            day_count,
+            user_ref["display_name"],
+        )
         daily_results = []
         for calendar_date in iter_dates(start_date, end_date):
             state = ingest_daily_summary_day_task(
@@ -209,8 +238,19 @@ def garmin_archive_user_flow(
             DAILY_SUMMARY,
             daily_results,
         )
+        run_logger.info(
+            "Daily-summary archive result for user=%s: %s",
+            user_ref["display_name"],
+            result[DAILY_SUMMARY],
+        )
 
     if ACTIVITIES in data_types:
+        run_logger.info(
+            "Listing activity summaries for user=%s window=%s..%s",
+            user_ref["display_name"],
+            start_date,
+            end_date,
+        )
         list_state = list_activity_summaries_task(
             user_id=user_id,
             start_date=start_date,
@@ -234,8 +274,8 @@ def garmin_archive_user_flow(
             )
         else:
             activity_summaries = list_state.result()
-            logger.info(
-                "Resolved %s activity summary(s) for %s",
+            run_logger.info(
+                "Resolved %s activity summary(s) for user=%s",
                 len(activity_summaries),
                 user_ref["display_name"],
             )
@@ -314,8 +354,17 @@ def garmin_archive_user_flow(
                     _aggregate_result_dicts(ACTIVITIES, activity_parts)
                 )
         result[ACTIVITIES] = _aggregate_result_dicts(ACTIVITIES, activity_results)
+        run_logger.info(
+            "Activity archive result for user=%s: %s",
+            user_ref["display_name"],
+            result[ACTIVITIES],
+        )
 
     if PERSONAL_RECORDS in data_types:
+        run_logger.info(
+            "Ingesting personal records for user=%s",
+            user_ref["display_name"],
+        )
         records_state = ingest_personal_records_task(
             user_id=user_id,
             dry_run=dry_run,
@@ -325,6 +374,19 @@ def garmin_archive_user_flow(
             records_state,
             data_type=PERSONAL_RECORDS,
         )
+
+        run_logger.info(
+            "Personal-record archive result for user=%s: %s",
+            user_ref["display_name"],
+            result[PERSONAL_RECORDS],
+        )
+
+    run_logger.info(
+        "Finished archive for user=%s user_id=%s: %s",
+        user_ref["display_name"],
+        user_id,
+        result,
+    )
 
     return result
 
@@ -342,6 +404,8 @@ def garmin_archive_flow(
     include_details: bool = True,
     include_files: bool = True,
 ) -> dict[str, Any]:
+    run_logger = _get_logger()
+    run_logger.info("Checking database connectivity and applying pending migrations")
     ensure_database_ready_task()
     window = resolve_date_window_task(
         start_date=start_date,
@@ -350,6 +414,22 @@ def garmin_archive_flow(
     )
     selected_data_types = normalize_data_types(data_types)
     users = resolve_active_users_task(user_filter=user)
+
+    run_logger.info(
+        "Starting Garmin archive: window=%s..%s users=%s data_types=%s dry_run=%s "
+        "fail_on_partial=%s include_details=%s include_files=%s user_filter=%r",
+        window["start_date"],
+        window["end_date"],
+        len(users),
+        selected_data_types,
+        dry_run,
+        fail_on_partial,
+        include_details,
+        include_files,
+        user,
+    )
+    if not users:
+        run_logger.warning("No active users matched the archive request; no data was ingested")
 
     results = [
         garmin_archive_user_flow(
@@ -377,5 +457,21 @@ def garmin_archive_flow(
         "results": results,
     }
     _publish_summary_artifact(summary)
-    _summarize_failures(results, fail_on_partial=fail_on_partial)
+    try:
+        _summarize_failures(results, fail_on_partial=fail_on_partial)
+    except RuntimeError:
+        run_logger.exception(
+            "Garmin archive completed with failures: results=%s fail_on_partial=%s",
+            results,
+            fail_on_partial,
+        )
+        raise
+
+    run_logger.info(
+        "Garmin archive completed: users=%s errors=%s partials=%s results=%s",
+        len(users),
+        errors,
+        partials,
+        results,
+    )
     return summary

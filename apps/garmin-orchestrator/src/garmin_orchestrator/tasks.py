@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import nullcontext
 from datetime import date
 from importlib.resources import as_file, files
@@ -8,7 +9,8 @@ from typing import Any
 
 from alembic import command
 from alembic.config import Config
-from prefect import task
+from prefect import get_run_logger, task
+from prefect.exceptions import MissingContextError
 from sqlalchemy import select
 from sqlmodel import Session
 
@@ -30,6 +32,15 @@ from garmin_sync.ingest.runners import (
 GARMIN_API_RETRIES = 3
 GARMIN_API_RETRY_DELAYS = [60, 300, 900]
 GARMIN_API_TAGS = ["garmin-api"]
+logger = logging.getLogger(__name__)
+
+
+def _get_logger():
+    """Use Prefect's run logger, while keeping direct function calls usable."""
+    try:
+        return get_run_logger()
+    except MissingContextError:
+        return logger
 
 
 def _alembic_script_location():
@@ -45,21 +56,28 @@ def _result_dict(result: IngestResult) -> dict[str, Any]:
 
 @task(name="ensure-database-ready")
 def ensure_database_ready_task() -> None:
-    engine = get_engine()
-    with Session(engine) as session:
-        session.connection()
+    run_logger = _get_logger()
+    try:
+        engine = get_engine()
+        run_logger.info("Checking database connection and applying migrations")
+        with Session(engine) as session:
+            session.connection()
 
-    alembic_cfg = Config()
-    alembic_cfg.set_main_option("sqlalchemy.url", str(engine.url))
-    script_location = _alembic_script_location()
-    script_location_context = (
-        nullcontext(script_location)
-        if isinstance(script_location, Path)
-        else as_file(script_location)
-    )
-    with script_location_context as location:
-        alembic_cfg.set_main_option("script_location", str(location))
-        command.upgrade(alembic_cfg, "head")
+        alembic_cfg = Config()
+        alembic_cfg.set_main_option("sqlalchemy.url", str(engine.url))
+        script_location = _alembic_script_location()
+        script_location_context = (
+            nullcontext(script_location)
+            if isinstance(script_location, Path)
+            else as_file(script_location)
+        )
+        with script_location_context as location:
+            alembic_cfg.set_main_option("script_location", str(location))
+            command.upgrade(alembic_cfg, "head")
+    except Exception:
+        run_logger.exception("Database readiness check or migration failed")
+        raise
+    run_logger.info("Database is ready and migrations are current")
 
 
 @task(name="resolve-date-window")
@@ -69,6 +87,7 @@ def resolve_date_window_task(
     end_date: date | None = None,
     days_back: int | None = None,
 ) -> dict[str, date]:
+    run_logger = _get_logger()
     settings = get_settings()
     window = resolve_date_window(
         start_date=start_date,
@@ -76,11 +95,23 @@ def resolve_date_window_task(
         days_back=days_back,
         default_days_back=settings.ingest_days_back,
     )
-    return {"start_date": window.start_date, "end_date": window.end_date}
+    result = {"start_date": window.start_date, "end_date": window.end_date}
+    run_logger.info(
+        "Resolved archive window=%s..%s from start_date=%s end_date=%s days_back=%s "
+        "default_days_back=%s",
+        window.start_date,
+        window.end_date,
+        start_date,
+        end_date,
+        days_back,
+        settings.ingest_days_back,
+    )
+    return result
 
 
 @task(name="resolve-active-users")
 def resolve_active_users_task(user_filter: str | None = None) -> list[dict[str, Any]]:
+    run_logger = _get_logger()
     engine = get_engine()
     with Session(engine) as session:
         stmt = select(User).where(User.is_active == True)  # noqa: E712
@@ -88,10 +119,17 @@ def resolve_active_users_task(user_filter: str | None = None) -> list[dict[str, 
             stmt = stmt.where(User.garmin_display_name == user_filter)
 
         users = session.scalars(stmt).all()
-        return [
+        result = [
             {"id": user.id, "display_name": user.garmin_display_name}
             for user in users
         ]
+    run_logger.info(
+        "Resolved %s active user(s) for user_filter=%r: %s",
+        len(result),
+        user_filter,
+        [user["display_name"] for user in result],
+    )
+    return result
 
 
 @task(
@@ -107,14 +145,37 @@ def ingest_daily_summary_day_task(
     calendar_date: date,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    return _result_dict(
-        ingest_daily_summary_day(
-            user_id=user_id,
-            calendar_date=calendar_date,
-            dry_run=dry_run,
-            raise_on_error=True,
-        )
+    run_logger = _get_logger()
+    run_logger.info(
+        "Ingesting daily summary: user_id=%s calendar_date=%s dry_run=%s",
+        user_id,
+        calendar_date,
+        dry_run,
     )
+    try:
+        result = _result_dict(
+            ingest_daily_summary_day(
+                user_id=user_id,
+                calendar_date=calendar_date,
+                dry_run=dry_run,
+                raise_on_error=True,
+            )
+        )
+    except Exception:
+        run_logger.exception(
+            "Daily-summary ingestion failed: user_id=%s calendar_date=%s dry_run=%s",
+            user_id,
+            calendar_date,
+            dry_run,
+        )
+        raise
+    run_logger.info(
+        "Daily-summary ingestion finished: user_id=%s calendar_date=%s result=%s",
+        user_id,
+        calendar_date,
+        result,
+    )
+    return result
 
 
 @task(
@@ -131,13 +192,36 @@ def list_activity_summaries_task(
     end_date: date,
     dry_run: bool = False,
 ) -> list[dict[str, Any]]:
-    return list_activity_summaries(
-        user_id=user_id,
-        start_date=start_date,
-        end_date=end_date,
-        dry_run=dry_run,
-        raise_on_error=True,
+    run_logger = _get_logger()
+    run_logger.info(
+        "Listing activity summaries: user_id=%s window=%s..%s dry_run=%s",
+        user_id,
+        start_date,
+        end_date,
+        dry_run,
     )
+    try:
+        summaries = list_activity_summaries(
+            user_id=user_id,
+            start_date=start_date,
+            end_date=end_date,
+            dry_run=dry_run,
+            raise_on_error=True,
+        )
+    except Exception:
+        run_logger.exception(
+            "Activity-summary listing failed: user_id=%s window=%s..%s",
+            user_id,
+            start_date,
+            end_date,
+        )
+        raise
+    run_logger.info(
+        "Listed %s activity summary(s): user_id=%s",
+        len(summaries),
+        user_id,
+    )
+    return summaries
 
 
 @task(
@@ -154,17 +238,39 @@ def ingest_activity_summary_task(
     dry_run: bool = False,
     activity_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return _result_dict(
-        ingest_activity(
-            user_id=user_id,
-            activity_id=activity_id,
-            dry_run=dry_run,
-            include_details=False,
-            include_files=False,
-            activity_summary=activity_summary,
-            raise_on_error=True,
-        )
+    run_logger = _get_logger()
+    run_logger.info(
+        "Ingesting activity summary: user_id=%s activity_id=%s dry_run=%s",
+        user_id,
+        activity_id,
+        dry_run,
     )
+    try:
+        result = _result_dict(
+            ingest_activity(
+                user_id=user_id,
+                activity_id=activity_id,
+                dry_run=dry_run,
+                include_details=False,
+                include_files=False,
+                activity_summary=activity_summary,
+                raise_on_error=True,
+            )
+        )
+    except Exception:
+        run_logger.exception(
+            "Activity-summary ingestion failed: user_id=%s activity_id=%s",
+            user_id,
+            activity_id,
+        )
+        raise
+    run_logger.info(
+        "Activity-summary ingestion finished: user_id=%s activity_id=%s result=%s",
+        user_id,
+        activity_id,
+        result,
+    )
+    return result
 
 
 @task(
@@ -180,14 +286,36 @@ def ingest_activity_detail_task(
     activity_id: int,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    return _result_dict(
-        ingest_activity_detail(
-            user_id=user_id,
-            activity_id=activity_id,
-            dry_run=dry_run,
-            raise_on_error=True,
-        )
+    run_logger = _get_logger()
+    run_logger.info(
+        "Ingesting activity detail: user_id=%s activity_id=%s dry_run=%s",
+        user_id,
+        activity_id,
+        dry_run,
     )
+    try:
+        result = _result_dict(
+            ingest_activity_detail(
+                user_id=user_id,
+                activity_id=activity_id,
+                dry_run=dry_run,
+                raise_on_error=True,
+            )
+        )
+    except Exception:
+        run_logger.exception(
+            "Activity-detail ingestion failed: user_id=%s activity_id=%s",
+            user_id,
+            activity_id,
+        )
+        raise
+    run_logger.info(
+        "Activity-detail ingestion finished: user_id=%s activity_id=%s result=%s",
+        user_id,
+        activity_id,
+        result,
+    )
+    return result
 
 
 @task(
@@ -203,14 +331,36 @@ def ingest_activity_file_task(
     activity_id: int,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    return _result_dict(
-        ingest_activity_file(
-            user_id=user_id,
-            activity_id=activity_id,
-            dry_run=dry_run,
-            raise_on_error=True,
-        )
+    run_logger = _get_logger()
+    run_logger.info(
+        "Downloading activity file: user_id=%s activity_id=%s dry_run=%s",
+        user_id,
+        activity_id,
+        dry_run,
     )
+    try:
+        result = _result_dict(
+            ingest_activity_file(
+                user_id=user_id,
+                activity_id=activity_id,
+                dry_run=dry_run,
+                raise_on_error=True,
+            )
+        )
+    except Exception:
+        run_logger.exception(
+            "Activity-file download failed: user_id=%s activity_id=%s",
+            user_id,
+            activity_id,
+        )
+        raise
+    run_logger.info(
+        "Activity-file download finished: user_id=%s activity_id=%s result=%s",
+        user_id,
+        activity_id,
+        result,
+    )
+    return result
 
 
 @task(
@@ -225,10 +375,26 @@ def ingest_personal_records_task(
     user_id: int,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    return _result_dict(
-        ingest_personal_records(
-            user_id=user_id,
-            dry_run=dry_run,
-            raise_on_error=True,
-        )
+    run_logger = _get_logger()
+    run_logger.info(
+        "Ingesting personal records: user_id=%s dry_run=%s",
+        user_id,
+        dry_run,
     )
+    try:
+        result = _result_dict(
+            ingest_personal_records(
+                user_id=user_id,
+                dry_run=dry_run,
+                raise_on_error=True,
+            )
+        )
+    except Exception:
+        run_logger.exception("Personal-record ingestion failed: user_id=%s", user_id)
+        raise
+    run_logger.info(
+        "Personal-record ingestion finished: user_id=%s result=%s",
+        user_id,
+        result,
+    )
+    return result

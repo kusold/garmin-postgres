@@ -455,6 +455,35 @@ def test_archive_flow_returns_structured_summary(monkeypatch):
     }
 
 
+def test_archive_flow_logs_request_and_result_summary(monkeypatch, caplog):
+    monkeypatch.setattr(
+        "garmin_orchestrator.flows.ensure_database_ready_task",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "garmin_orchestrator.flows.resolve_date_window_task",
+        lambda **_: {"start_date": date(2026, 6, 1), "end_date": date(2026, 6, 1)},
+    )
+    monkeypatch.setattr(
+        "garmin_orchestrator.flows.resolve_active_users_task",
+        lambda **_: [{"id": 7, "display_name": "mike"}],
+    )
+    monkeypatch.setattr(
+        "garmin_orchestrator.flows.garmin_archive_user_flow",
+        lambda **_: {
+            "user": "mike",
+            "daily_summary": {"status": "success", "rows": 1, "errors": 0},
+        },
+    )
+
+    with caplog.at_level("INFO", logger="garmin_orchestrator.flows"):
+        garmin_archive_flow.fn(data_types=["daily_summary"], days_back=1)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Starting Garmin archive:" in message for message in messages)
+    assert any("Garmin archive completed:" in message for message in messages)
+
+
 def test_cli_rejects_invalid_data_type_before_flow(monkeypatch):
     def fail_flow(**_):
         raise AssertionError("flow should not run")
