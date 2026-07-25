@@ -7,11 +7,27 @@ from garmin_orchestrator import tasks
 from garmin_orchestrator.cli import app
 from garmin_orchestrator.flows import (
     _aggregate_result_dicts,
+    _summary_markdown,
     _summarize_failures,
+    _task_state_result,
     garmin_archive_flow,
     garmin_archive_user_flow,
 )
 from garmin_sync.ingest.results import IngestResult
+
+
+class FakeState:
+    def __init__(self, value, *, completed=True):
+        self.value = value
+        self.completed = completed
+
+    def is_completed(self):
+        return self.completed
+
+    def result(self, *, raise_on_failure=True):
+        if not self.completed and raise_on_failure:
+            raise self.value
+        return self.value
 
 
 def test_aggregates_child_results_without_losing_metrics():
@@ -67,46 +83,83 @@ def test_failure_policy_fails_on_error():
         )
 
 
+def test_failed_task_state_becomes_error_result_without_raising():
+    result = _task_state_result(
+        FakeState(RuntimeError("Garmin unavailable"), completed=False),
+        data_type="daily_summary",
+    )
+
+    assert result == {
+        "status": "error",
+        "rows": 0,
+        "errors": 1,
+        "error": "Garmin unavailable",
+    }
+
+
 def test_user_flow_runs_selected_objects_sequentially(monkeypatch):
     calls = []
 
-    def fake_daily_task(*, user_id, calendar_date, dry_run):
+    def fake_daily_task(*, user_id, calendar_date, dry_run, return_state):
+        assert return_state is True
         calls.append(("daily", user_id, calendar_date, dry_run))
-        return {"status": "success", "rows": 1, "errors": 0}
+        return FakeState({"status": "success", "rows": 1, "errors": 0})
 
-    def fake_list_activities_task(*, user_id, start_date, end_date, dry_run):
+    def fake_list_activities_task(
+        *,
+        user_id,
+        start_date,
+        end_date,
+        dry_run,
+        return_state,
+    ):
+        assert return_state is True
         calls.append(("list", user_id, start_date, end_date, dry_run))
-        return [{"activityId": 1001}, {"activityId": 1002}]
+        return FakeState([{"activityId": 1001}, {"activityId": 1002}])
 
-    def fake_activity_task(
+    def fake_activity_summary_task(
         *,
         user_id,
         activity_id,
         dry_run,
-        include_details,
-        include_files,
         activity_summary,
+        return_state,
     ):
+        assert return_state is True
         calls.append((
-            "activity",
+            "activity-summary",
             user_id,
             activity_id,
             dry_run,
-            include_details,
-            include_files,
             activity_summary,
         ))
-        return {
+        return FakeState({
             "status": "success",
             "rows": 1,
             "errors": 0,
+        })
+
+    def fake_activity_detail_task(
+        *,
+        user_id,
+        activity_id,
+        dry_run,
+        return_state,
+    ):
+        assert return_state is True
+        calls.append(("activity-detail", user_id, activity_id, dry_run))
+        return FakeState({
+            "status": "success",
+            "rows": 0,
+            "errors": 0,
             "detail_rows": 1,
             "detail_errors": 0,
-        }
+        })
 
-    def fake_records_task(*, user_id, dry_run):
+    def fake_records_task(*, user_id, dry_run, return_state):
+        assert return_state is True
         calls.append(("records", user_id, dry_run))
-        return {"status": "success", "rows": 3, "errors": 0}
+        return FakeState({"status": "success", "rows": 3, "errors": 0})
 
     monkeypatch.setattr(
         "garmin_orchestrator.flows.ingest_daily_summary_day_task",
@@ -117,8 +170,12 @@ def test_user_flow_runs_selected_objects_sequentially(monkeypatch):
         fake_list_activities_task,
     )
     monkeypatch.setattr(
-        "garmin_orchestrator.flows.ingest_activity_task",
-        fake_activity_task,
+        "garmin_orchestrator.flows.ingest_activity_summary_task",
+        fake_activity_summary_task,
+    )
+    monkeypatch.setattr(
+        "garmin_orchestrator.flows.ingest_activity_detail_task",
+        fake_activity_detail_task,
     )
     monkeypatch.setattr(
         "garmin_orchestrator.flows.ingest_personal_records_task",
@@ -153,8 +210,10 @@ def test_user_flow_runs_selected_objects_sequentially(monkeypatch):
         ("daily", 7, date(2026, 6, 1), True),
         ("daily", 7, date(2026, 6, 2), True),
         ("list", 7, date(2026, 6, 1), date(2026, 6, 2), True),
-        ("activity", 7, 1001, True, True, False, {"activityId": 1001}),
-        ("activity", 7, 1002, True, True, False, {"activityId": 1002}),
+        ("activity-summary", 7, 1001, True, {"activityId": 1001}),
+        ("activity-detail", 7, 1001, True),
+        ("activity-summary", 7, 1002, True, {"activityId": 1002}),
+        ("activity-detail", 7, 1002, True),
         ("records", 7, True),
     ]
 
@@ -186,7 +245,7 @@ def test_list_activity_summaries_task_preserves_dry_run(monkeypatch):
     assert calls == [(7, date(2026, 6, 1), date(2026, 6, 2), True, True)]
 
 
-def test_ingest_activity_task_passes_summary_fallback(monkeypatch):
+def test_ingest_activity_summary_task_passes_summary_fallback(monkeypatch):
     calls = []
     summary = {
         "activityId": 1004,
@@ -218,17 +277,132 @@ def test_ingest_activity_task_passes_summary_fallback(monkeypatch):
 
     monkeypatch.setattr(tasks, "ingest_activity", fake_ingest_activity)
 
-    result = tasks.ingest_activity_task.fn(
+    result = tasks.ingest_activity_summary_task.fn(
         user_id=7,
         activity_id=1004,
         dry_run=True,
-        include_details=True,
-        include_files=False,
         activity_summary=summary,
     )
 
     assert result == {"status": "success", "rows": 1, "errors": 0}
-    assert calls == [(7, 1004, True, True, False, summary, True)]
+    assert calls == [(7, 1004, True, False, False, summary, True)]
+
+
+def test_user_flow_continues_after_exhausted_daily_task(monkeypatch):
+    calls = []
+
+    def fake_daily_task(*, user_id, calendar_date, dry_run, return_state):
+        calls.append(calendar_date)
+        if calendar_date == date(2026, 6, 1):
+            return FakeState(RuntimeError("first day failed"), completed=False)
+        return FakeState({"status": "success", "rows": 1, "errors": 0})
+
+    monkeypatch.setattr(
+        "garmin_orchestrator.flows.ingest_daily_summary_day_task",
+        fake_daily_task,
+    )
+
+    result = garmin_archive_user_flow.fn(
+        user_ref={"id": 7, "display_name": "mike"},
+        data_types=["daily_summary"],
+        start_date=date(2026, 6, 1),
+        end_date=date(2026, 6, 2),
+        dry_run=False,
+    )
+
+    assert calls == [date(2026, 6, 1), date(2026, 6, 2)]
+    assert result["daily_summary"] == {
+        "status": "partial",
+        "rows": 1,
+        "errors": 1,
+        "error": "first day failed",
+    }
+
+
+def test_activity_file_runs_after_detail_retries_are_exhausted(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        "garmin_orchestrator.flows.list_activity_summaries_task",
+        lambda **kwargs: FakeState([{"activityId": 1001}]),
+    )
+    monkeypatch.setattr(
+        "garmin_orchestrator.flows.ingest_activity_summary_task",
+        lambda **kwargs: FakeState({
+            "status": "success",
+            "rows": 1,
+            "errors": 0,
+        }),
+    )
+
+    def fake_detail_task(**kwargs):
+        calls.append("detail")
+        return FakeState(RuntimeError("detail unavailable"), completed=False)
+
+    def fake_file_task(**kwargs):
+        calls.append("file")
+        return FakeState({
+            "status": "success",
+            "rows": 0,
+            "errors": 0,
+            "file_rows": 1,
+            "file_errors": 0,
+        })
+
+    monkeypatch.setattr(
+        "garmin_orchestrator.flows.ingest_activity_detail_task",
+        fake_detail_task,
+    )
+    monkeypatch.setattr(
+        "garmin_orchestrator.flows.ingest_activity_file_task",
+        fake_file_task,
+    )
+
+    result = garmin_archive_user_flow.fn(
+        user_ref={"id": 7, "display_name": "mike"},
+        data_types=["activities"],
+        start_date=date(2026, 6, 1),
+        end_date=date(2026, 6, 1),
+        dry_run=False,
+        include_details=True,
+        include_files=True,
+    )
+
+    assert calls == ["detail", "file"]
+    assert result["activities"] == {
+        "status": "partial",
+        "rows": 1,
+        "errors": 1,
+        "detail_errors": 1,
+        "detail_rows": 0,
+        "file_errors": 0,
+        "file_rows": 1,
+        "error": "detail unavailable",
+    }
+
+
+def test_summary_markdown_includes_object_metrics_and_errors():
+    markdown = _summary_markdown({
+        "window": {"start_date": "2026-06-01", "end_date": "2026-06-02"},
+        "dry_run": False,
+        "errors": 0,
+        "partials": 1,
+        "results": [
+            {
+                "user": "mike",
+                "activities": {
+                    "status": "partial",
+                    "rows": 2,
+                    "errors": 1,
+                    "detail_errors": 1,
+                    "error": "detail | unavailable",
+                },
+            }
+        ],
+    })
+
+    assert "| mike | activities | partial | 2 | 1 | detail_errors=1 |" in markdown
+    assert "detail \\| unavailable" in markdown
 
 
 def test_archive_flow_returns_structured_summary(monkeypatch):

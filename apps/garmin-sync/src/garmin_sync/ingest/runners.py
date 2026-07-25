@@ -56,6 +56,23 @@ def _get_user(session: Session, user_id: int) -> User:
     return user
 
 
+def _get_activity(
+    session: Session,
+    *,
+    user_id: int,
+    activity_id: int,
+) -> Activity:
+    activity = session.scalars(
+        select(Activity).where(
+            Activity.user_id == user_id,
+            Activity.activity_id == activity_id,
+        )
+    ).first()
+    if activity is None:
+        raise ValueError(f"Activity {activity_id} not found for user {user_id}")
+    return activity
+
+
 def _client_for_user(session: Session, user: User) -> GarminClient | None:
     garmin = load_user_client(session, user)
     if garmin is None:
@@ -213,6 +230,7 @@ def _fetch_and_store_activity_detail(
     activity: Activity,
     *,
     dry_run: bool = False,
+    raise_on_error: bool = False,
 ) -> bool:
     try:
         raw_detail = client.get_activity_details(
@@ -230,6 +248,8 @@ def _fetch_and_store_activity_detail(
             upsert_activity_detail(session, detail)
         return True
     except Exception as e:
+        if raise_on_error:
+            raise
         logger.warning(
             "Failed to fetch details for activity %s: %s",
             activity.activity_id,
@@ -242,6 +262,8 @@ def _download_and_store_file(
     session: Session,
     client: GarminClient,
     activity: Activity,
+    *,
+    raise_on_error: bool = False,
 ) -> bool:
     try:
         file_data = client.download_activity(str(activity.activity_id))
@@ -257,6 +279,8 @@ def _download_and_store_file(
         upsert_activity_file(session, activity_file)
         return True
     except Exception as e:
+        if raise_on_error:
+            raise
         logger.warning(
             "Failed to download file for activity %s: %s",
             activity.activity_id,
@@ -385,6 +409,143 @@ def list_activity_summaries(
             if raise_on_error:
                 raise
             return []
+
+
+def ingest_activity_detail(
+    *,
+    user_id: int,
+    activity_id: int,
+    dry_run: bool = False,
+    session: Session | None = None,
+    raise_on_error: bool = False,
+) -> IngestResult:
+    with _session_scope(session) as current_session:
+        try:
+            user = _get_user(current_session, user_id)
+            client = _client_for_user(current_session, user)
+            if client is None:
+                return IngestResult.error_result(
+                    ACTIVITIES,
+                    error="Failed to load tokens",
+                    metrics={"detail_rows": 0, "detail_errors": 1},
+                )
+
+            activity = (
+                Activity(user_id=user.id, activity_id=activity_id)
+                if dry_run
+                else _get_activity(
+                    current_session,
+                    user_id=user_id,
+                    activity_id=activity_id,
+                )
+            )
+            detail_succeeded = _fetch_and_store_activity_detail(
+                current_session,
+                client,
+                activity,
+                dry_run=dry_run,
+                raise_on_error=raise_on_error,
+            )
+            if not detail_succeeded:
+                return IngestResult.error_result(
+                    ACTIVITIES,
+                    error="Failed to fetch activity detail",
+                    metrics={"detail_rows": 0, "detail_errors": 1},
+                )
+            _save_tokens_and_mark_ingested(
+                current_session,
+                user,
+                client,
+                dry_run=dry_run,
+            )
+            return IngestResult.success(
+                ACTIVITIES,
+                metrics={"detail_rows": 1, "detail_errors": 0},
+            )
+        except Exception as e:
+            current_session.rollback()
+            if raise_on_error:
+                raise
+            logger.warning(
+                "Failed to ingest detail for activity %s (user %s): %s",
+                activity_id,
+                user_id,
+                e,
+            )
+            return IngestResult.error_result(
+                ACTIVITIES,
+                error=str(e),
+                metrics={"detail_rows": 0, "detail_errors": 1},
+            )
+
+
+def ingest_activity_file(
+    *,
+    user_id: int,
+    activity_id: int,
+    dry_run: bool = False,
+    session: Session | None = None,
+    raise_on_error: bool = False,
+) -> IngestResult:
+    if dry_run:
+        return IngestResult.success(
+            ACTIVITIES,
+            metrics={"file_rows": 0, "file_errors": 0},
+        )
+
+    with _session_scope(session) as current_session:
+        try:
+            user = _get_user(current_session, user_id)
+            client = _client_for_user(current_session, user)
+            if client is None:
+                return IngestResult.error_result(
+                    ACTIVITIES,
+                    error="Failed to load tokens",
+                    metrics={"file_rows": 0, "file_errors": 1},
+                )
+
+            activity = _get_activity(
+                current_session,
+                user_id=user_id,
+                activity_id=activity_id,
+            )
+            file_succeeded = _download_and_store_file(
+                current_session,
+                client,
+                activity,
+                raise_on_error=raise_on_error,
+            )
+            if not file_succeeded:
+                return IngestResult.error_result(
+                    ACTIVITIES,
+                    error="Failed to download activity file",
+                    metrics={"file_rows": 0, "file_errors": 1},
+                )
+            _save_tokens_and_mark_ingested(
+                current_session,
+                user,
+                client,
+                dry_run=False,
+            )
+            return IngestResult.success(
+                ACTIVITIES,
+                metrics={"file_rows": 1, "file_errors": 0},
+            )
+        except Exception as e:
+            current_session.rollback()
+            if raise_on_error:
+                raise
+            logger.warning(
+                "Failed to ingest file for activity %s (user %s): %s",
+                activity_id,
+                user_id,
+                e,
+            )
+            return IngestResult.error_result(
+                ACTIVITIES,
+                error=str(e),
+                metrics={"file_rows": 0, "file_errors": 1},
+            )
 
 
 def ingest_activity(

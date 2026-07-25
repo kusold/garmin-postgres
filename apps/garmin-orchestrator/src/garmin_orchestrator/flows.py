@@ -5,6 +5,7 @@ from datetime import date
 from typing import Any
 
 from prefect import flow
+from prefect.artifacts import create_markdown_artifact
 
 from garmin_sync.ingest.date_windows import iter_dates
 from garmin_sync.ingest.object_registry import (
@@ -17,7 +18,9 @@ from garmin_sync.ingest.results import IngestResult, aggregate_results
 
 from garmin_orchestrator.tasks import (
     ensure_database_ready_task,
-    ingest_activity_task,
+    ingest_activity_detail_task,
+    ingest_activity_file_task,
+    ingest_activity_summary_task,
     ingest_daily_summary_day_task,
     ingest_personal_records_task,
     list_activity_summaries_task,
@@ -53,17 +56,40 @@ def _aggregate_result_dicts(
     if not results:
         return IngestResult.success(data_type).as_dict()
 
-    return aggregate_results(
+    aggregated = aggregate_results(
         data_type,
         [_dict_to_ingest_result(data_type, result) for result in results],
     ).as_dict()
+    error_messages = list(
+        dict.fromkeys(
+            result["error"]
+            for result in results
+            if result.get("error")
+        )
+    )
+    if error_messages:
+        aggregated["error"] = "; ".join(error_messages)
+    return aggregated
 
 
-def _summarize_failures(
-    results: list[dict[str, Any]],
+def _task_state_result(
+    state: Any,
     *,
-    fail_on_partial: bool,
-) -> tuple[int, int]:
+    data_type: str,
+    failure_metrics: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    if state.is_completed():
+        return state.result()
+
+    error = state.result(raise_on_failure=False)
+    return IngestResult.error_result(
+        data_type,
+        error=str(error),
+        metrics=failure_metrics,
+    ).as_dict()
+
+
+def _count_failures(results: list[dict[str, Any]]) -> tuple[int, int]:
     errors = 0
     partials = 0
     for user_result in results:
@@ -75,6 +101,15 @@ def _summarize_failures(
                 errors += 1
             elif status == "partial":
                 partials += 1
+    return errors, partials
+
+
+def _summarize_failures(
+    results: list[dict[str, Any]],
+    *,
+    fail_on_partial: bool,
+) -> tuple[int, int]:
+    errors, partials = _count_failures(results)
 
     if errors or (fail_on_partial and partials):
         raise RuntimeError(
@@ -83,6 +118,65 @@ def _summarize_failures(
         )
 
     return errors, partials
+
+
+def _escape_markdown_cell(value: Any) -> str:
+    return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def _summary_markdown(summary: dict[str, Any]) -> str:
+    window = summary["window"]
+    lines = [
+        "# Garmin archive ingestion",
+        "",
+        (
+            f"Window: `{window['start_date']}` through `{window['end_date']}`  \n"
+            f"Dry run: `{summary['dry_run']}`  \n"
+            f"Errors: `{summary['errors']}`  \n"
+            f"Partials: `{summary['partials']}`"
+        ),
+        "",
+        "| User | Object | Status | Rows | Errors | Metrics | Error |",
+        "| --- | --- | --- | ---: | ---: | --- | --- |",
+    ]
+    for user_result in summary["results"]:
+        user = user_result["user"]
+        for data_type, info in user_result.items():
+            if data_type == "user":
+                continue
+            metrics = ", ".join(
+                f"{key}={value}"
+                for key, value in sorted(info.items())
+                if key not in RESULT_METADATA_KEYS and isinstance(value, int)
+            )
+            lines.append(
+                "| "
+                + " | ".join(
+                    _escape_markdown_cell(value)
+                    for value in (
+                        user,
+                        data_type,
+                        info["status"],
+                        info.get("rows", 0),
+                        info.get("errors", 0),
+                        metrics,
+                        info.get("error", ""),
+                    )
+                )
+                + " |"
+            )
+    return "\n".join(lines)
+
+
+def _publish_summary_artifact(summary: dict[str, Any]) -> None:
+    try:
+        create_markdown_artifact(
+            key="garmin-archive-summary",
+            markdown=_summary_markdown(summary),
+            description="Per-user Garmin archive ingestion results",
+        )
+    except Exception:
+        logger.warning("Failed to publish Garmin archive summary artifact", exc_info=True)
 
 
 @flow(name="garmin-archive-user")
@@ -100,48 +194,136 @@ def garmin_archive_user_flow(
     result: dict[str, Any] = {"user": user_ref["display_name"]}
 
     if DAILY_SUMMARY in data_types:
-        daily_results = [
-            ingest_daily_summary_day_task(
+        daily_results = []
+        for calendar_date in iter_dates(start_date, end_date):
+            state = ingest_daily_summary_day_task(
                 user_id=user_id,
                 calendar_date=calendar_date,
                 dry_run=dry_run,
+                return_state=True,
             )
-            for calendar_date in iter_dates(start_date, end_date)
-        ]
+            daily_results.append(
+                _task_state_result(state, data_type=DAILY_SUMMARY)
+            )
         result[DAILY_SUMMARY] = _aggregate_result_dicts(
             DAILY_SUMMARY,
             daily_results,
         )
 
     if ACTIVITIES in data_types:
-        activity_summaries = list_activity_summaries_task(
+        list_state = list_activity_summaries_task(
             user_id=user_id,
             start_date=start_date,
             end_date=end_date,
             dry_run=dry_run,
+            return_state=True,
         )
-        logger.info(
-            "Resolved %s activity summary(s) for %s",
-            len(activity_summaries),
-            user_ref["display_name"],
-        )
-        activity_results = [
-            ingest_activity_task(
-                user_id=user_id,
-                activity_id=int(activity_summary["activityId"]),
-                dry_run=dry_run,
-                include_details=include_details,
-                include_files=include_files,
-                activity_summary=activity_summary,
+        activity_results: list[dict[str, Any]] = []
+        if not list_state.is_completed():
+            activity_results.append(
+                _task_state_result(
+                    list_state,
+                    data_type=ACTIVITIES,
+                    failure_metrics={
+                        "detail_rows": 0,
+                        "detail_errors": 0,
+                        "file_rows": 0,
+                        "file_errors": 0,
+                    },
+                )
             )
-            for activity_summary in activity_summaries
-        ]
+        else:
+            activity_summaries = list_state.result()
+            logger.info(
+                "Resolved %s activity summary(s) for %s",
+                len(activity_summaries),
+                user_ref["display_name"],
+            )
+            for activity_summary in activity_summaries:
+                try:
+                    activity_id = int(activity_summary["activityId"])
+                except Exception as exc:
+                    activity_results.append(
+                        IngestResult.error_result(
+                            ACTIVITIES,
+                            error=str(exc),
+                            metrics={
+                                "detail_rows": 0,
+                                "detail_errors": 0,
+                                "file_rows": 0,
+                                "file_errors": 0,
+                            },
+                        ).as_dict()
+                    )
+                    continue
+
+                summary_state = ingest_activity_summary_task(
+                    user_id=user_id,
+                    activity_id=activity_id,
+                    dry_run=dry_run,
+                    activity_summary=activity_summary,
+                    return_state=True,
+                )
+                activity_parts = [
+                    _task_state_result(
+                        summary_state,
+                        data_type=ACTIVITIES,
+                        failure_metrics={
+                            "detail_rows": 0,
+                            "detail_errors": 0,
+                            "file_rows": 0,
+                            "file_errors": 0,
+                        },
+                    )
+                ]
+                if activity_parts[0]["status"] == "success":
+                    if include_details:
+                        detail_state = ingest_activity_detail_task(
+                            user_id=user_id,
+                            activity_id=activity_id,
+                            dry_run=dry_run,
+                            return_state=True,
+                        )
+                        activity_parts.append(
+                            _task_state_result(
+                                detail_state,
+                                data_type=ACTIVITIES,
+                                failure_metrics={
+                                    "detail_rows": 0,
+                                    "detail_errors": 1,
+                                },
+                            )
+                        )
+
+                    if include_files and not dry_run:
+                        file_state = ingest_activity_file_task(
+                            user_id=user_id,
+                            activity_id=activity_id,
+                            dry_run=dry_run,
+                            return_state=True,
+                        )
+                        activity_parts.append(
+                            _task_state_result(
+                                file_state,
+                                data_type=ACTIVITIES,
+                                failure_metrics={"file_rows": 0, "file_errors": 1},
+                            )
+                        )
+
+                activity_results.append(
+                    _aggregate_result_dicts(ACTIVITIES, activity_parts)
+                )
         result[ACTIVITIES] = _aggregate_result_dicts(ACTIVITIES, activity_results)
 
     if PERSONAL_RECORDS in data_types:
-        result[PERSONAL_RECORDS] = ingest_personal_records_task(
+        records_state = ingest_personal_records_task(
             user_id=user_id,
             dry_run=dry_run,
+            return_state=True,
+        )
+        result[PERSONAL_RECORDS] = _task_state_result(
+            records_state,
+            data_type=PERSONAL_RECORDS,
         )
 
     return result
@@ -182,11 +364,8 @@ def garmin_archive_flow(
         for user_ref in users
     ]
 
-    errors, partials = _summarize_failures(
-        results,
-        fail_on_partial=fail_on_partial,
-    )
-    return {
+    errors, partials = _count_failures(results)
+    summary = {
         "window": {
             "start_date": window["start_date"].isoformat(),
             "end_date": window["end_date"].isoformat(),
@@ -197,3 +376,6 @@ def garmin_archive_flow(
         "partials": partials,
         "results": results,
     }
+    _publish_summary_artifact(summary)
+    _summarize_failures(results, fail_on_partial=fail_on_partial)
+    return summary

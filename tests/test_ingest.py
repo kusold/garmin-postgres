@@ -1,6 +1,8 @@
+from contextlib import nullcontext
 from datetime import date, datetime, timezone
 from unittest.mock import MagicMock
 
+import pytest
 from sqlalchemy import select
 
 import garmin_sync.ingest.date_windows as date_windows
@@ -609,6 +611,123 @@ class TestRunIngestionActivityDetails:
             "detail_rows": 1,
             "detail_errors": 0,
         }
+
+
+class TestSplitActivityRunners:
+    def test_detail_and_file_are_independently_persisted(
+        self,
+        monkeypatch,
+    ):
+        session = MagicMock()
+        user = User(id=7, garmin_display_name="testuser")
+        activity = Activity(id=11, user_id=7, activity_id=10005)
+        client = MagicMock()
+        detail_fetch = MagicMock(return_value=True)
+        file_download = MagicMock(return_value=True)
+
+        monkeypatch.setattr(
+            runners,
+            "_session_scope",
+            lambda session=None: nullcontext(session),
+        )
+        monkeypatch.setattr(runners, "_get_user", lambda session, user_id: user)
+        monkeypatch.setattr(
+            runners,
+            "_get_activity",
+            lambda session, user_id, activity_id: activity,
+        )
+        monkeypatch.setattr(runners, "_client_for_user", lambda session, user: client)
+        monkeypatch.setattr(
+            runners,
+            "_fetch_and_store_activity_detail",
+            detail_fetch,
+        )
+        monkeypatch.setattr(runners, "_download_and_store_file", file_download)
+        monkeypatch.setattr(
+            runners,
+            "_save_tokens_and_mark_ingested",
+            lambda *args, **kwargs: None,
+        )
+
+        detail_result = runners.ingest_activity_detail(
+            user_id=7,
+            activity_id=activity.activity_id,
+            session=session,
+            raise_on_error=True,
+        )
+        file_result = runners.ingest_activity_file(
+            user_id=7,
+            activity_id=activity.activity_id,
+            session=session,
+            raise_on_error=True,
+        )
+
+        detail_fetch.assert_called_once_with(
+            session,
+            client,
+            activity,
+            dry_run=False,
+            raise_on_error=True,
+        )
+        file_download.assert_called_once_with(
+            session,
+            client,
+            activity,
+            raise_on_error=True,
+        )
+        assert detail_result.as_dict() == {
+            "status": "success",
+            "rows": 0,
+            "errors": 0,
+            "detail_rows": 1,
+            "detail_errors": 0,
+        }
+        assert file_result.as_dict() == {
+            "status": "success",
+            "rows": 0,
+            "errors": 0,
+            "file_rows": 1,
+            "file_errors": 0,
+        }
+
+    def test_detail_failure_can_raise_for_prefect_retry(
+        self,
+        monkeypatch,
+    ):
+        session = MagicMock()
+        user = User(id=7, garmin_display_name="testuser")
+        activity = Activity(id=12, user_id=7, activity_id=10006)
+
+        monkeypatch.setattr(
+            runners,
+            "_session_scope",
+            lambda session=None: nullcontext(session),
+        )
+        monkeypatch.setattr(runners, "_get_user", lambda session, user_id: user)
+        monkeypatch.setattr(
+            runners,
+            "_get_activity",
+            lambda session, user_id, activity_id: activity,
+        )
+        monkeypatch.setattr(
+            runners,
+            "_client_for_user",
+            lambda session, user: MagicMock(),
+        )
+        monkeypatch.setattr(
+            runners,
+            "_fetch_and_store_activity_detail",
+            MagicMock(side_effect=RuntimeError("detail endpoint unavailable")),
+        )
+
+        with pytest.raises(RuntimeError, match="detail endpoint unavailable"):
+            runners.ingest_activity_detail(
+                user_id=7,
+                activity_id=10006,
+                session=session,
+                raise_on_error=True,
+            )
+        session.rollback.assert_called_once_with()
 
 
 class TestUpsertPersonalRecord:
