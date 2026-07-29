@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
+from uuid import uuid4
 
 from prefect import flow, get_run_logger
 from prefect.artifacts import create_markdown_artifact
+from prefect.context import FlowRunContext
+from prefect.deployments import run_deployment
 from prefect.exceptions import MissingContextError
 
 from garmin_sync.ingest.date_windows import iter_dates
@@ -31,6 +34,12 @@ from garmin_orchestrator.tasks import (
 
 
 RESULT_METADATA_KEYS = {"status", "rows", "errors", "error"}
+ARCHIVE_FLOW_TIMEOUT_SECONDS = 3 * 60 * 60
+ARCHIVE_USER_FLOW_TIMEOUT_SECONDS = ARCHIVE_FLOW_TIMEOUT_SECONDS - (15 * 60)
+BACKFILL_FLOW_TIMEOUT_SECONDS = ARCHIVE_FLOW_TIMEOUT_SECONDS + (15 * 60)
+DEFAULT_BACKFILL_CHUNK_DAYS = 30
+MAX_BACKFILL_CHUNK_DAYS = 90
+BACKFILL_DEPLOYMENT_NAME = "garmin-backfill/backfill"
 logger = logging.getLogger(__name__)
 
 
@@ -40,6 +49,27 @@ def _get_logger():
         return get_run_logger()
     except MissingContextError:
         return logger
+
+
+def _resolve_backfill_chain_id(chain_id: str | None) -> str:
+    if chain_id:
+        return chain_id
+
+    context = FlowRunContext.get()
+    if context and context.flow_run:
+        return str(context.flow_run.id)
+    return str(uuid4())
+
+
+def _backfill_chunk_end(
+    start_date: date,
+    end_date: date,
+    *,
+    chunk_days: int,
+) -> date:
+    if not 1 <= chunk_days <= MAX_BACKFILL_CHUNK_DAYS:
+        raise ValueError(f"chunk_days must be between 1 and {MAX_BACKFILL_CHUNK_DAYS}")
+    return min(end_date, start_date + timedelta(days=chunk_days - 1))
 
 
 def _dict_to_ingest_result(data_type: str, result: dict[str, Any]) -> IngestResult:
@@ -188,7 +218,10 @@ def _publish_summary_artifact(summary: dict[str, Any]) -> None:
         logger.warning("Failed to publish Garmin archive summary artifact", exc_info=True)
 
 
-@flow(name="garmin-archive-user")
+@flow(
+    name="garmin-archive-user",
+    timeout_seconds=ARCHIVE_USER_FLOW_TIMEOUT_SECONDS,
+)
 def garmin_archive_user_flow(
     *,
     user_ref: dict[str, Any],
@@ -391,7 +424,7 @@ def garmin_archive_user_flow(
     return result
 
 
-@flow(name="garmin-archive")
+@flow(name="garmin-archive", timeout_seconds=ARCHIVE_FLOW_TIMEOUT_SECONDS)
 def garmin_archive_flow(
     *,
     user: str | None = None,
@@ -475,3 +508,136 @@ def garmin_archive_flow(
         results,
     )
     return summary
+
+
+@flow(name="garmin-backfill", timeout_seconds=BACKFILL_FLOW_TIMEOUT_SECONDS)
+def garmin_backfill_flow(
+    *,
+    user: str | None = None,
+    data_types: list[str] | None = None,
+    days_back: int | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    dry_run: bool = False,
+    fail_on_partial: bool = False,
+    include_details: bool = True,
+    include_files: bool = True,
+    chunk_days: int = DEFAULT_BACKFILL_CHUNK_DAYS,
+    chain_id: str | None = None,
+) -> dict[str, Any]:
+    """Run one bounded backfill chunk and enqueue the remaining window.
+
+    Each continuation is a separate deployment run. Completed chunks therefore
+    remain completed if a later chunk fails or the worker host restarts.
+    """
+    run_logger = _get_logger()
+    window = resolve_date_window_task(
+        start_date=start_date,
+        end_date=end_date,
+        days_back=days_back,
+    )
+    selected_data_types = normalize_data_types(data_types)
+    resolved_chain_id = _resolve_backfill_chain_id(chain_id)
+    temporal_data_types = [
+        data_type
+        for data_type in selected_data_types
+        if data_type in {DAILY_SUMMARY, ACTIVITIES}
+    ]
+    chunk_end = (
+        _backfill_chunk_end(
+            window["start_date"],
+            window["end_date"],
+            chunk_days=chunk_days,
+        )
+        if temporal_data_types
+        else window["end_date"]
+    )
+
+    run_logger.info(
+        "Starting backfill chunk: chain_id=%s requested_window=%s..%s "
+        "chunk_window=%s..%s chunk_days=%s data_types=%s",
+        resolved_chain_id,
+        window["start_date"],
+        window["end_date"],
+        window["start_date"],
+        chunk_end,
+        chunk_days,
+        selected_data_types,
+    )
+    summary = garmin_archive_flow(
+        user=user,
+        data_types=selected_data_types,
+        start_date=window["start_date"],
+        end_date=chunk_end,
+        dry_run=dry_run,
+        fail_on_partial=fail_on_partial,
+        include_details=include_details,
+        include_files=include_files,
+    )
+
+    continuation_run_id: str | None = None
+    next_start_date = chunk_end + timedelta(days=1)
+    continuation_data_types = [
+        data_type for data_type in selected_data_types if data_type != PERSONAL_RECORDS
+    ]
+    if next_start_date <= window["end_date"] and continuation_data_types:
+        continuation_parameters = {
+            "user": user,
+            "data_types": continuation_data_types,
+            "days_back": None,
+            "start_date": next_start_date,
+            "end_date": window["end_date"],
+            "dry_run": dry_run,
+            "fail_on_partial": fail_on_partial,
+            "include_details": include_details,
+            "include_files": include_files,
+            "chunk_days": chunk_days,
+            "chain_id": resolved_chain_id,
+        }
+        continuation = run_deployment(
+            BACKFILL_DEPLOYMENT_NAME,
+            parameters=continuation_parameters,
+            flow_run_name=(
+                f"backfill-{next_start_date.isoformat()}-through-"
+                f"{window['end_date'].isoformat()}"
+            ),
+            timeout=0,
+            tags=[
+                "garmin-backfill",
+                f"garmin-backfill-chain:{resolved_chain_id}",
+            ],
+            idempotency_key=(
+                f"garmin-backfill:{resolved_chain_id}:{next_start_date.isoformat()}"
+            ),
+            as_subflow=False,
+        )
+        continuation_run_id = str(continuation.id)
+        run_logger.info(
+            "Enqueued next backfill chunk: chain_id=%s run_id=%s "
+            "remaining_window=%s..%s data_types=%s",
+            resolved_chain_id,
+            continuation_run_id,
+            next_start_date,
+            window["end_date"],
+            continuation_data_types,
+        )
+    else:
+        run_logger.info(
+            "Backfill chain completed: chain_id=%s requested_window=%s..%s",
+            resolved_chain_id,
+            window["start_date"],
+            window["end_date"],
+        )
+
+    return {
+        **summary,
+        "backfill": {
+            "chain_id": resolved_chain_id,
+            "requested_window": {
+                "start_date": window["start_date"].isoformat(),
+                "end_date": window["end_date"].isoformat(),
+            },
+            "chunk_days": chunk_days,
+            "continuation_run_id": continuation_run_id,
+        },
+    }

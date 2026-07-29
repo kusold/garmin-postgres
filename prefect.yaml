@@ -1,4 +1,4 @@
-prefect-version: 3.7.5
+prefect-version: 3.8.0
 name: garmin-postgres
 
 build: null
@@ -10,14 +10,19 @@ pull:
 
 definitions:
   work_pools:
-    garmin_docker: &garmin_docker
+    garmin_scheduled: &garmin_scheduled
       name: garmin-docker
-      work_queue_name: default
-      job_variables:
+      work_queue_name: scheduled
+      job_variables: &garmin_docker_job_variables
         image: "{{ $GARMIN_POSTGRES_IMAGE }}"
         image_pull_policy: Always
         volumes:
           - "{{ $GARMIN_CONNECT_ENV_FILE }}:/app/.env:ro"
+    garmin_backfill: &garmin_backfill
+      name: garmin-docker
+      work_queue_name: backfill
+      job_variables:
+        <<: *garmin_docker_job_variables
   schedules:
     twice_daily: &twice_daily
       cron: "0 6,18 * * *"
@@ -35,7 +40,7 @@ deployments:
       data_types: null
       dry_run: false
       fail_on_partial: false
-    work_pool: *garmin_docker
+    work_pool: *garmin_scheduled
 
   - name: daily-summary
     entrypoint: garmin_orchestrator.flows.garmin_archive_flow
@@ -48,7 +53,7 @@ deployments:
         - daily_summary
       dry_run: false
       fail_on_partial: false
-    work_pool: *garmin_docker
+    work_pool: *garmin_scheduled
 
   - name: activities
     entrypoint: garmin_orchestrator.flows.garmin_archive_flow
@@ -63,7 +68,7 @@ deployments:
       fail_on_partial: false
       include_details: true
       include_files: true
-    work_pool: *garmin_docker
+    work_pool: *garmin_scheduled
 
   - name: personal-records
     entrypoint: garmin_orchestrator.flows.garmin_archive_flow
@@ -76,11 +81,11 @@ deployments:
         - personal_records
       dry_run: false
       fail_on_partial: false
-    work_pool: *garmin_docker
+    work_pool: *garmin_scheduled
 
   - name: backfill
-    entrypoint: garmin_orchestrator.flows.garmin_archive_flow
-    description: Manual historical backfill with explicit dates or days_back.
+    entrypoint: garmin_orchestrator.flows.garmin_backfill_flow
+    description: Chunked historical backfill with explicit dates or days_back.
     concurrency_limit:
       limit: 1
       collision_strategy: ENQUEUE
@@ -88,4 +93,5 @@ deployments:
       data_types: null
       dry_run: false
       fail_on_partial: false
-    work_pool: *garmin_docker
+      chunk_days: 30
+    work_pool: *garmin_backfill

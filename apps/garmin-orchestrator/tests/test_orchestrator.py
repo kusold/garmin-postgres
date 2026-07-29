@@ -1,17 +1,21 @@
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
 
-from garmin_orchestrator import tasks
+from garmin_orchestrator import deployments, tasks
 from garmin_orchestrator.cli import app
 from garmin_orchestrator.flows import (
+    MAX_BACKFILL_CHUNK_DAYS,
     _aggregate_result_dicts,
+    _backfill_chunk_end,
     _summary_markdown,
     _summarize_failures,
     _task_state_result,
     garmin_archive_flow,
     garmin_archive_user_flow,
+    garmin_backfill_flow,
 )
 from garmin_sync.ingest.results import IngestResult
 
@@ -28,6 +32,49 @@ class FakeState:
         if not self.completed and raise_on_failure:
             raise self.value
         return self.value
+
+
+def test_configure_work_pool_serializes_jobs_and_prioritizes_schedules(monkeypatch):
+    calls = []
+
+    class FakeClient:
+        def update_work_pool(self, name, update):
+            calls.append(("pool", name, update.concurrency_limit))
+
+        def read_work_queue_by_name(self, name, *, work_pool_name):
+            calls.append(("read", name, work_pool_name))
+            if name == "backfill":
+                raise deployments.ObjectNotFound("missing")
+            return SimpleNamespace(id="scheduled-id")
+
+        def create_work_queue(self, *, name, priority, work_pool_name):
+            calls.append(("create", name, priority, work_pool_name))
+
+        def update_work_queue(self, queue_id, *, priority):
+            calls.append(("update", queue_id, priority))
+
+    class FakeClientContext:
+        def __enter__(self):
+            return FakeClient()
+
+        def __exit__(self, *_):
+            return None
+
+    monkeypatch.setattr(
+        deployments,
+        "get_client",
+        lambda *, sync_client: FakeClientContext(),
+    )
+
+    deployments.configure_work_pool()
+
+    assert calls == [
+        ("pool", "garmin-docker", 1),
+        ("read", "scheduled", "garmin-docker"),
+        ("update", "scheduled-id", 1),
+        ("read", "backfill", "garmin-docker"),
+        ("create", "backfill", 10, "garmin-docker"),
+    ]
 
 
 def test_aggregates_child_results_without_losing_metrics():
@@ -453,6 +500,146 @@ def test_archive_flow_returns_structured_summary(monkeypatch):
             }
         ],
     }
+
+
+def test_backfill_chunk_size_is_bounded():
+    assert _backfill_chunk_end(
+        date(2026, 1, 1),
+        date(2026, 12, 31),
+        chunk_days=30,
+    ) == date(2026, 1, 30)
+
+    with pytest.raises(ValueError, match=f"between 1 and {MAX_BACKFILL_CHUNK_DAYS}"):
+        _backfill_chunk_end(
+            date(2026, 1, 1),
+            date(2026, 12, 31),
+            chunk_days=MAX_BACKFILL_CHUNK_DAYS + 1,
+        )
+
+
+def test_backfill_runs_one_chunk_and_enqueues_the_full_remainder(monkeypatch):
+    archive_calls = []
+    deployment_calls = []
+
+    monkeypatch.setattr(
+        "garmin_orchestrator.flows.resolve_date_window_task",
+        lambda **_: {
+            "start_date": date(2020, 1, 1),
+            "end_date": date(2026, 12, 31),
+        },
+    )
+
+    def fake_archive_flow(**kwargs):
+        archive_calls.append(kwargs)
+        return {
+            "window": {
+                "start_date": kwargs["start_date"].isoformat(),
+                "end_date": kwargs["end_date"].isoformat(),
+            },
+            "data_types": kwargs["data_types"],
+            "dry_run": kwargs["dry_run"],
+            "errors": 0,
+            "partials": 0,
+            "results": [],
+        }
+
+    def fake_run_deployment(name, **kwargs):
+        deployment_calls.append((name, kwargs))
+        return SimpleNamespace(id="next-run-id")
+
+    monkeypatch.setattr(
+        "garmin_orchestrator.flows.garmin_archive_flow",
+        fake_archive_flow,
+    )
+    monkeypatch.setattr(
+        "garmin_orchestrator.flows.run_deployment",
+        fake_run_deployment,
+    )
+
+    result = garmin_backfill_flow.fn(
+        data_types=["daily_summary", "activities", "personal_records"],
+        days_back=2557,
+        chunk_days=30,
+        chain_id="chain-123",
+    )
+
+    assert archive_calls == [
+        {
+            "user": None,
+            "data_types": [
+                "daily_summary",
+                "activities",
+                "personal_records",
+            ],
+            "start_date": date(2020, 1, 1),
+            "end_date": date(2020, 1, 30),
+            "dry_run": False,
+            "fail_on_partial": False,
+            "include_details": True,
+            "include_files": True,
+        }
+    ]
+    assert deployment_calls[0][0] == "garmin-backfill/backfill"
+    continuation = deployment_calls[0][1]
+    assert continuation["parameters"]["start_date"] == date(2020, 1, 31)
+    assert continuation["parameters"]["end_date"] == date(2026, 12, 31)
+    assert continuation["parameters"]["data_types"] == [
+        "daily_summary",
+        "activities",
+    ]
+    assert continuation["parameters"]["chain_id"] == "chain-123"
+    assert continuation["timeout"] == 0
+    assert continuation["as_subflow"] is False
+    assert continuation["idempotency_key"] == ("garmin-backfill:chain-123:2020-01-31")
+    assert result["backfill"] == {
+        "chain_id": "chain-123",
+        "requested_window": {
+            "start_date": "2020-01-01",
+            "end_date": "2026-12-31",
+        },
+        "chunk_days": 30,
+        "continuation_run_id": "next-run-id",
+    }
+
+
+def test_backfill_does_not_chain_date_independent_personal_records(monkeypatch):
+    monkeypatch.setattr(
+        "garmin_orchestrator.flows.resolve_date_window_task",
+        lambda **_: {
+            "start_date": date(2020, 1, 1),
+            "end_date": date(2026, 12, 31),
+        },
+    )
+    monkeypatch.setattr(
+        "garmin_orchestrator.flows.garmin_archive_flow",
+        lambda **kwargs: {
+            "window": {
+                "start_date": kwargs["start_date"].isoformat(),
+                "end_date": kwargs["end_date"].isoformat(),
+            },
+            "data_types": kwargs["data_types"],
+            "dry_run": kwargs["dry_run"],
+            "errors": 0,
+            "partials": 0,
+            "results": [],
+        },
+    )
+    monkeypatch.setattr(
+        "garmin_orchestrator.flows.run_deployment",
+        lambda *args, **kwargs: pytest.fail("should not enqueue a continuation"),
+    )
+
+    result = garmin_backfill_flow.fn(
+        data_types=["personal_records"],
+        days_back=2557,
+        chain_id="chain-123",
+    )
+
+    assert result["window"] == {
+        "start_date": "2020-01-01",
+        "end_date": "2026-12-31",
+    }
+    assert result["backfill"]["continuation_run_id"] is None
 
 
 def test_archive_flow_logs_request_and_result_summary(monkeypatch, caplog):

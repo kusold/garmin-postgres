@@ -32,6 +32,9 @@ from garmin_sync.ingest.runners import (
 GARMIN_API_RETRIES = 3
 GARMIN_API_RETRY_DELAYS = [60, 300, 900]
 GARMIN_API_TAGS = ["garmin-api"]
+GARMIN_API_TIMEOUT_SECONDS = 15 * 60
+DATABASE_TIMEOUT_SECONDS = 5 * 60
+DATABASE_QUERY_TIMEOUT_SECONDS = 2 * 60
 logger = logging.getLogger(__name__)
 
 
@@ -54,7 +57,7 @@ def _result_dict(result: IngestResult) -> dict[str, Any]:
     return result.as_dict()
 
 
-@task(name="ensure-database-ready")
+@task(name="ensure-database-ready", timeout_seconds=DATABASE_TIMEOUT_SECONDS)
 def ensure_database_ready_task() -> None:
     run_logger = _get_logger()
     try:
@@ -80,7 +83,7 @@ def ensure_database_ready_task() -> None:
     run_logger.info("Database is ready and migrations are current")
 
 
-@task(name="resolve-date-window")
+@task(name="resolve-date-window", timeout_seconds=DATABASE_QUERY_TIMEOUT_SECONDS)
 def resolve_date_window_task(
     *,
     start_date: date | None = None,
@@ -109,7 +112,7 @@ def resolve_date_window_task(
     return result
 
 
-@task(name="resolve-active-users")
+@task(name="resolve-active-users", timeout_seconds=DATABASE_QUERY_TIMEOUT_SECONDS)
 def resolve_active_users_task(user_filter: str | None = None) -> list[dict[str, Any]]:
     run_logger = _get_logger()
     engine = get_engine()
@@ -138,6 +141,7 @@ def resolve_active_users_task(user_filter: str | None = None) -> list[dict[str, 
     retries=GARMIN_API_RETRIES,
     retry_delay_seconds=GARMIN_API_RETRY_DELAYS,
     tags=GARMIN_API_TAGS,
+    timeout_seconds=GARMIN_API_TIMEOUT_SECONDS,
 )
 def ingest_daily_summary_day_task(
     *,
@@ -184,6 +188,7 @@ def ingest_daily_summary_day_task(
     retries=GARMIN_API_RETRIES,
     retry_delay_seconds=GARMIN_API_RETRY_DELAYS,
     tags=GARMIN_API_TAGS,
+    timeout_seconds=GARMIN_API_TIMEOUT_SECONDS,
 )
 def list_activity_summaries_task(
     *,
@@ -230,6 +235,7 @@ def list_activity_summaries_task(
     retries=GARMIN_API_RETRIES,
     retry_delay_seconds=GARMIN_API_RETRY_DELAYS,
     tags=GARMIN_API_TAGS,
+    timeout_seconds=GARMIN_API_TIMEOUT_SECONDS,
 )
 def ingest_activity_summary_task(
     *,
@@ -279,6 +285,7 @@ def ingest_activity_summary_task(
     retries=GARMIN_API_RETRIES,
     retry_delay_seconds=GARMIN_API_RETRY_DELAYS,
     tags=GARMIN_API_TAGS,
+    timeout_seconds=GARMIN_API_TIMEOUT_SECONDS,
 )
 def ingest_activity_detail_task(
     *,
@@ -324,6 +331,7 @@ def ingest_activity_detail_task(
     retries=GARMIN_API_RETRIES,
     retry_delay_seconds=GARMIN_API_RETRY_DELAYS,
     tags=GARMIN_API_TAGS,
+    timeout_seconds=GARMIN_API_TIMEOUT_SECONDS,
 )
 def ingest_activity_file_task(
     *,
@@ -369,6 +377,7 @@ def ingest_activity_file_task(
     retries=GARMIN_API_RETRIES,
     retry_delay_seconds=GARMIN_API_RETRY_DELAYS,
     tags=GARMIN_API_TAGS,
+    timeout_seconds=GARMIN_API_TIMEOUT_SECONDS,
 )
 def ingest_personal_records_task(
     *,

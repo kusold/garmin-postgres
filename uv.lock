@@ -483,7 +483,7 @@ wheels = [
 
 [[package]]
 name = "fastapi"
-version = "0.138.0"
+version = "0.141.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
@@ -492,9 +492,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5b/58/ff455d9fe47c60abadb34b9e05a304b1f05f5ab8000ac01565156b6f5e43/fastapi-0.138.0.tar.gz", hash = "sha256:d445a4877636ad191e7053e08c9bf98cb921a6756776848400bb773d1740c061", size = 419240, upload-time = "2026-06-20T01:18:05.259Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ac/7e/26bdd4f5a81891adf233354b6f4e7977563cc16e0f94b3f33405873c9278/fastapi-0.141.0.tar.gz", hash = "sha256:cae32222bdc8b2805c4d3deb4e024b381ea2a6f2de7febfe3a9a73a9c29c2e5e", size = 425532, upload-time = "2026-07-29T14:47:57.249Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6c/ff/8496d9847a5fedae775eb49460722d3efaa80487854273e9647ae876218c/fastapi-0.138.0-py3-none-any.whl", hash = "sha256:b6f54fd1bd72c80b0f899f172c61a600f6f7af9b43d4d772a018f35624048cb0", size = 126779, upload-time = "2026-06-20T01:18:03.483Z" },
+    { url = "https://files.pythonhosted.org/packages/84/85/eefb536e451ebeb7ad9045e62a0c17c68d7caa52211174da034e683956d1/fastapi-0.141.0-py3-none-any.whl", hash = "sha256:5567705c791fa33202dabd1860df1d1650a7b1bf373378198d7b0675c9574618", size = 131808, upload-time = "2026-07-29T14:47:59.076Z" },
 ]
 
 [[package]]
@@ -521,7 +521,7 @@ dependencies = [
 requires-dist = [
     { name = "garmin-postgres-core", editable = "packages/garmin-postgres-core" },
     { name = "garmin-sync", editable = "apps/garmin-sync" },
-    { name = "prefect", specifier = ">=3.0.0,<4" },
+    { name = "prefect", specifier = "==3.8.0" },
     { name = "typer", specifier = ">=0.15.0" },
 ]
 
@@ -1085,7 +1085,7 @@ wheels = [
 
 [[package]]
 name = "prefect"
-version = "3.7.5"
+version = "3.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiosqlite" },
@@ -1145,9 +1145,9 @@ dependencies = [
     { name = "websockets" },
     { name = "whenever" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a0/b4/ba44a2263940b53db323d059770e005aac959d272ba2025ad6fc7de10cba/prefect-3.7.5.tar.gz", hash = "sha256:e2838fa80562bfb7e27e67ea63c7b13d6fdead8052dbe76eb394c6b919ef3dcd", size = 13881122, upload-time = "2026-06-18T22:39:17.378Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/33/5b/80ff205e675d6dd692ba54e8e6f49b4f31ab8e51d9bdd8230b6463d8403b/prefect-3.8.0.tar.gz", hash = "sha256:31d8b01f1c2682a266f7db25797d9c8f3780842b65c44a401379aa61f8e9e393", size = 14207301, upload-time = "2026-07-23T22:31:03.721Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0d/30/e9c5ad5f3fd17f7309bcd9bab6af5cb5811ae3b50d7d0fd15a3ea899f5e0/prefect-3.7.5-py3-none-any.whl", hash = "sha256:214837b7cb1e10f8fec59018253cd8ef65c8b394b7df29c511b645b0ff5e4478", size = 14766992, upload-time = "2026-06-18T22:39:14.383Z" },
+    { url = "https://files.pythonhosted.org/packages/19/66/c6967180764a26ed79aa972404e126ab49b2121ef8bfb14fb99a099ee5cd/prefect-3.8.0-py3-none-any.whl", hash = "sha256:ea4953f99b178a8cca78c15200b92247e23f0c6caf553821fdfcc8be42e8215b", size = 15141590, upload-time = "2026-07-23T22:31:00.685Z" },
 ]
 
 [[package]]
