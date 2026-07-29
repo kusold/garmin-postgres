@@ -38,6 +38,10 @@ ACTIVITY_DETAIL_MAX_CHART_SIZE = 2000
 ACTIVITY_DETAIL_MAX_POLYLINE_SIZE = 4000
 
 
+class GarminTokenLoadError(RuntimeError):
+    """Raised when a user's stored Garmin tokens cannot be loaded."""
+
+
 @contextmanager
 def _session_scope(session: Session | None = None) -> Iterator[Session]:
     if session is not None:
@@ -390,7 +394,7 @@ def list_activity_summaries(
             user = _get_user(current_session, user_id)
             client = _client_for_user(current_session, user)
             if client is None:
-                raise RuntimeError("Failed to load tokens")
+                raise GarminTokenLoadError("Failed to load tokens")
 
             raw_activities = client.get_activities_by_date(
                 start_date.isoformat(),

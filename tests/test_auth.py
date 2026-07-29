@@ -140,7 +140,7 @@ def test_load_user_client_no_tokens():
 
 
 @patch("garmin_sync.auth.Garmin")
-def test_load_user_client_invalid_tokens(mock_garmin_cls):
+def test_load_user_client_invalid_tokens(mock_garmin_cls, caplog):
     session = MagicMock()
     user = User(
         garmin_display_name="badtokens",
@@ -154,6 +154,7 @@ def test_load_user_client_invalid_tokens(mock_garmin_cls):
 
     result = load_user_client(session, user)
     assert result is None
+    assert "corrupt tokens" in caplog.text
 
 
 # -- refresh_tokens tests --

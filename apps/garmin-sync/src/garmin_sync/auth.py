@@ -105,8 +105,12 @@ def load_user_client(session: Session, user: User) -> Garmin | None:
         if not garmin.display_name:
             garmin.display_name = user.garmin_display_name
         return garmin
-    except Exception:
-        logger.warning("Failed to load tokens for user %s", user.garmin_display_name)
+    except Exception as exc:
+        logger.warning(
+            "Failed to load tokens for user %s: %s",
+            user.garmin_display_name,
+            exc,
+        )
         return None
 
 

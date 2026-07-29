@@ -2,6 +2,7 @@ from datetime import date
 from types import SimpleNamespace
 
 import pytest
+from prefect.states import Failed
 from typer.testing import CliRunner
 
 from garmin_orchestrator import deployments, tasks
@@ -18,6 +19,7 @@ from garmin_orchestrator.flows import (
     garmin_backfill_flow,
 )
 from garmin_sync.ingest.results import IngestResult
+from garmin_sync.ingest.runners import GarminTokenLoadError
 
 
 class FakeState:
@@ -32,6 +34,18 @@ class FakeState:
         if not self.completed and raise_on_failure:
             raise self.value
         return self.value
+
+
+def test_retry_policy_skips_stored_token_failures():
+    state = Failed(data=GarminTokenLoadError("invalid tokens"))
+
+    assert tasks._retry_garmin_api_failure(None, None, state) is False
+
+
+def test_retry_policy_keeps_transient_failures():
+    state = Failed(data=RuntimeError("Garmin unavailable"))
+
+    assert tasks._retry_garmin_api_failure(None, None, state) is True
 
 
 def test_configure_work_pool_serializes_jobs_and_prioritizes_schedules(monkeypatch):

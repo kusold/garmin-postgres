@@ -20,6 +20,7 @@ from garmin_postgres.models.user import User
 from garmin_sync.ingest.date_windows import resolve_date_window
 from garmin_sync.ingest.results import IngestResult
 from garmin_sync.ingest.runners import (
+    GarminTokenLoadError,
     ingest_activity,
     ingest_activity_detail,
     ingest_activity_file,
@@ -36,6 +37,12 @@ GARMIN_API_TIMEOUT_SECONDS = 15 * 60
 DATABASE_TIMEOUT_SECONDS = 5 * 60
 DATABASE_QUERY_TIMEOUT_SECONDS = 2 * 60
 logger = logging.getLogger(__name__)
+
+
+def _retry_garmin_api_failure(_task, _task_run, state) -> bool:
+    """Retry transient API failures, but not invalid local credentials."""
+    failure = state.result(raise_on_failure=False)
+    return not isinstance(failure, GarminTokenLoadError)
 
 
 def _get_logger():
@@ -140,6 +147,7 @@ def resolve_active_users_task(user_filter: str | None = None) -> list[dict[str, 
     task_run_name="daily-summary-{user_id}-{calendar_date}",
     retries=GARMIN_API_RETRIES,
     retry_delay_seconds=GARMIN_API_RETRY_DELAYS,
+    retry_condition_fn=_retry_garmin_api_failure,
     tags=GARMIN_API_TAGS,
     timeout_seconds=GARMIN_API_TIMEOUT_SECONDS,
 )
@@ -187,6 +195,7 @@ def ingest_daily_summary_day_task(
     task_run_name="activity-list-{user_id}-{start_date}-{end_date}",
     retries=GARMIN_API_RETRIES,
     retry_delay_seconds=GARMIN_API_RETRY_DELAYS,
+    retry_condition_fn=_retry_garmin_api_failure,
     tags=GARMIN_API_TAGS,
     timeout_seconds=GARMIN_API_TIMEOUT_SECONDS,
 )
@@ -234,6 +243,7 @@ def list_activity_summaries_task(
     task_run_name="activity-summary-{user_id}-{activity_id}",
     retries=GARMIN_API_RETRIES,
     retry_delay_seconds=GARMIN_API_RETRY_DELAYS,
+    retry_condition_fn=_retry_garmin_api_failure,
     tags=GARMIN_API_TAGS,
     timeout_seconds=GARMIN_API_TIMEOUT_SECONDS,
 )
@@ -284,6 +294,7 @@ def ingest_activity_summary_task(
     task_run_name="activity-detail-{user_id}-{activity_id}",
     retries=GARMIN_API_RETRIES,
     retry_delay_seconds=GARMIN_API_RETRY_DELAYS,
+    retry_condition_fn=_retry_garmin_api_failure,
     tags=GARMIN_API_TAGS,
     timeout_seconds=GARMIN_API_TIMEOUT_SECONDS,
 )
@@ -330,6 +341,7 @@ def ingest_activity_detail_task(
     task_run_name="activity-file-{user_id}-{activity_id}",
     retries=GARMIN_API_RETRIES,
     retry_delay_seconds=GARMIN_API_RETRY_DELAYS,
+    retry_condition_fn=_retry_garmin_api_failure,
     tags=GARMIN_API_TAGS,
     timeout_seconds=GARMIN_API_TIMEOUT_SECONDS,
 )
@@ -376,6 +388,7 @@ def ingest_activity_file_task(
     task_run_name="personal-records-{user_id}",
     retries=GARMIN_API_RETRIES,
     retry_delay_seconds=GARMIN_API_RETRY_DELAYS,
+    retry_condition_fn=_retry_garmin_api_failure,
     tags=GARMIN_API_TAGS,
     timeout_seconds=GARMIN_API_TIMEOUT_SECONDS,
 )
