@@ -90,5 +90,7 @@ jobs:
           export UV_CACHE_DIR="${RUNNER_TEMP}/uv-cache"
 
           uv sync --locked --all-packages
+          uv run --package garmin-orchestrator python -c \
+            "from garmin_orchestrator.deployments import configure_work_pool; configure_work_pool()"
           uv run --package garmin-orchestrator prefect --no-prompt concurrency-limit create garmin-api 1
           uv run --package garmin-orchestrator prefect --no-prompt deploy --all --version "${GITHUB_SHA}"
