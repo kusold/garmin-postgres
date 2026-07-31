@@ -150,6 +150,9 @@ uv run garmin-orchestrator run personal-records
 uv run garmin-orchestrator run notion-sync --user mike
 ```
 
+Use `--start-date` on the first Notion run to backfill historical activities
+and daily steps. Scheduled runs then maintain the rolling two-day window.
+
 Local deployment setup:
 
 ```bash
