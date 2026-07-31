@@ -16,6 +16,10 @@ from garmin_sync.ingest.object_registry import (
 
 from garmin_orchestrator.deployments import deploy_all
 from garmin_orchestrator.flows import garmin_archive_flow
+from garmin_orchestrator.notion_flows import (
+    normalize_notion_data_types,
+    notion_sync_flow,
+)
 
 
 app = typer.Typer(
@@ -40,6 +44,16 @@ def _parse_data_type_options(values: list[str] | None) -> list[str] | None:
     try:
         return normalize_data_types(values)
     except UnknownIngestObject as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+
+
+def _parse_notion_data_type_options(values: list[str] | None) -> list[str] | None:
+    if not values:
+        return None
+    try:
+        return normalize_notion_data_types(values)
+    except ValueError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1)
 
@@ -281,6 +295,68 @@ def run_personal_records(
         fail_on_partial=fail_on_partial,
         include_details=True,
         include_files=True,
+    )
+
+
+@run_app.command("notion-sync")
+def run_notion_sync(
+    user: Annotated[
+        str | None,
+        typer.Option(
+            "--user",
+            "-u",
+            help="Garmin display name; inferred when exactly one user is active",
+        ),
+    ] = None,
+    days_back: Annotated[
+        int,
+        typer.Option(
+            "--days-back",
+            "-d",
+            help="Days of activities and daily steps to sync",
+        ),
+    ] = 2,
+    start_date: Annotated[
+        str | None,
+        typer.Option("--start-date", help="Explicit start date (YYYY-MM-DD)"),
+    ] = None,
+    end_date: Annotated[
+        str | None,
+        typer.Option("--end-date", help="Explicit end date (YYYY-MM-DD)"),
+    ] = None,
+    data_type: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--data-type",
+            "-t",
+            help="Data types to sync (activities, daily_steps, personal_records)",
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Query Notion but don't create or update pages"),
+    ] = False,
+    fail_on_partial: Annotated[
+        bool,
+        typer.Option(
+            "--fail-on-partial",
+            help="Exit non-zero when any selected object is partial",
+        ),
+    ] = False,
+) -> None:
+    """Run the PostgreSQL-to-Notion Prefect flow locally."""
+    if days_back < 1:
+        typer.echo("--days-back must be at least 1", err=True)
+        raise typer.Exit(1)
+
+    notion_sync_flow(
+        user=user,
+        data_types=_parse_notion_data_type_options(data_type),
+        days_back=days_back,
+        start_date=_parse_date_option(start_date, "--start-date"),
+        end_date=_parse_date_option(end_date, "--end-date"),
+        dry_run=dry_run,
+        fail_on_partial=fail_on_partial,
     )
 
 

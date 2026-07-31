@@ -6,10 +6,16 @@ or ORM objects across task boundaries.
 
 ## Flow topology
 
-No deployment calls another deployment. All five invoke the shared
+The five Garmin ingestion deployments invoke the shared
 `garmin-archive` parent flow with different schedules and default parameters.
 The parent invokes one `garmin-archive-user` child flow at a time, and each
 child runs its selected object branches sequentially.
+
+The separate `notion-sync` deployment reads the archived PostgreSQL rows only;
+it never calls Garmin. It runs daily at 07:00 `America/Denver`, one hour after
+the morning incremental archive. Its two-day window applies to activities and
+daily steps, while personal records are fully replayed so the latest record for
+each Garmin `typeId` is reflected in Notion.
 
 ```mermaid
 flowchart TB
@@ -141,6 +147,7 @@ uv run garmin-orchestrator run archive --dry-run
 uv run garmin-orchestrator run daily-summary --days-back 2
 uv run garmin-orchestrator run activities --days-back 7
 uv run garmin-orchestrator run personal-records
+uv run garmin-orchestrator run notion-sync --user mike
 ```
 
 Local deployment setup:
@@ -175,11 +182,11 @@ Actions secrets. The production worker exposes its Garmin env file at:
 ```
 
 `prefect.yaml` mounts the configured `GARMIN_CONNECT_ENV_FILE` into each Docker
-job container at `/app/.env`, allowing the existing settings loader to read
-values such as `DATABASE_URL`. The deploy workflow only passes the file path,
-defaulting to the production path above. Set a repository variable named
-`GARMIN_CONNECT_ENV_FILE` to override the path without changing deployment
-metadata.
+job container at `/app/.env`, allowing the existing settings loaders to read
+`DATABASE_URL` and the `NOTION_*` values documented in the root README. The
+deploy workflow only passes the file path, defaulting to the production path
+above. Set a repository variable named `GARMIN_CONNECT_ENV_FILE` to override
+the path without changing deployment metadata.
 
 Required GitHub secrets for the Tailscale OAuth client:
 
