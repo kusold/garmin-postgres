@@ -252,6 +252,10 @@ def test_notion_settings_process_env_overrides_dotenv(tmp_path, monkeypatch):
     assert settings.token == "from-env"
 
 
+def test_notion_settings_loads_docker_mounted_env_file():
+    assert NotionSettings.model_config["env_file"] == (".env", "/app/.env")
+
+
 def test_notion_sync_run_requires_user():
     from notion_sync.cli import app
 

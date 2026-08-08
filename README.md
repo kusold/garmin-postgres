@@ -78,6 +78,28 @@ Run one data type:
 uv run notion-sync run --user your-garmin-display-name --data-type personal_records
 ```
 
+Run the Prefect flow locally:
+
+```bash
+uv run garmin-orchestrator run notion-sync --user your-garmin-display-name
+```
+
+The `notion-sync` Prefect deployment runs daily at 07:00
+`America/Denver`, after the 06:00 Garmin archive. It syncs the last two
+completed days of activities and daily steps, and refreshes all personal
+records so the latest record for each Garmin `typeId` wins. When exactly one
+Garmin user is active, the scheduled deployment infers that user; multi-user
+installations must set the deployment's `user` parameter.
+
+For the first sync, provide the earliest archived date to backfill existing
+activities and daily steps:
+
+```bash
+uv run garmin-orchestrator run notion-sync \
+  --user your-garmin-display-name \
+  --start-date 2020-01-01
+```
+
 ## Running Tests
 
 ```bash
