@@ -121,6 +121,18 @@ class TestParseActivity:
         assert result.start_time.minute == 30
         assert result.start_time.tzinfo == timezone.utc
 
+    def test_parses_activity_detail_response_shape(self):
+        raw = {
+            "activityId": 23444533321,
+            "summaryDTO": {"startTimeGMT": "2026-07-01T16:32:31.0"},
+            "activityTypeDTO": {"typeKey": "strength_training", "typeId": 13},
+        }
+
+        result = parse_activity(raw, user_id=42)
+
+        assert result.activity_type == "strength_training"
+        assert result.start_time == datetime(2026, 7, 1, 16, 32, 31, tzinfo=timezone.utc)
+
     def test_missing_activity_id_raises_key_error(self):
         raw = {k: v for k, v in SAMPLE_ACTIVITY.items() if k != "activityId"}
 
