@@ -10,9 +10,9 @@ from prefect.exceptions import MissingContextError
 from sqlmodel import Session
 
 from garmin_postgres.db import get_engine
-from notion_sync.config import get_settings as get_notion_settings
 from notion_sync.notion import NotionSink
 from notion_sync.sync import run_sync
+from notion_sync.targets import find_user, notion_sync_config
 
 
 NOTION_SYNC_TIMEOUT_SECONDS = 60 * 60
@@ -48,9 +48,22 @@ def sync_notion_user_task(
     stored record is replayed in chronological order and the latest value wins.
     """
     run_logger = _get_logger()
-    settings = get_notion_settings()
-    if not settings.token and not dry_run:
-        raise ValueError("NOTION_TOKEN is required unless dry_run is enabled")
+    engine = get_engine()
+    with Session(engine) as session:
+        db_user = find_user(session, user)
+        if db_user is None:
+            raise ValueError(f"No Garmin user matches user={user!r}")
+        token, targets = notion_sync_config(session, db_user.id)
+
+    if not token and not dry_run:
+        raise ValueError(
+            f"sync_targets 'notion' config for user={user!r} has no token "
+            "(required unless dry_run is enabled)"
+        )
+    if not targets:
+        raise ValueError(
+            f"sync_targets 'notion' config for user={user!r} has no databases"
+        )
 
     run_logger.info(
         "Starting Notion sync: user=%s window=%s..%s data_types=%s dry_run=%s",
@@ -60,14 +73,12 @@ def sync_notion_user_task(
         data_types,
         dry_run,
     )
-
-    client = Client(auth=settings.token or "dry-run")
+    client = Client(auth=token or "dry-run")
     sink = NotionSink(client, dry_run=dry_run)
     dated_data_types = [
         data_type for data_type in data_types if data_type != PERSONAL_RECORDS
     ]
 
-    engine = get_engine()
     with Session(engine) as session:
         results: dict[str, dict[str, Any]] = {}
         if dated_data_types:
@@ -75,7 +86,7 @@ def sync_notion_user_task(
                 run_sync(
                     session,
                     sink,
-                    settings,
+                    targets,
                     data_types=dated_data_types,
                     start_date=start_date,
                     end_date=end_date,
@@ -87,7 +98,7 @@ def sync_notion_user_task(
                 run_sync(
                     session,
                     sink,
-                    settings,
+                    targets,
                     data_types=[PERSONAL_RECORDS],
                     user_filter=user,
                 )

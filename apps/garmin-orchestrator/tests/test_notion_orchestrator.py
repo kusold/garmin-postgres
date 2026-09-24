@@ -55,20 +55,25 @@ def test_notion_user_task_bounds_dated_rows_but_replays_all_personal_records(
         def __exit__(self, *_):
             return None
 
-    def fake_run_sync(current_session, sink, settings, **kwargs):
+    def fake_run_sync(current_session, sink, targets, **kwargs):
         assert current_session is session
         assert sink == "sink"
-        assert settings.token == "secret"
+        assert targets == {"activities": "db-act", "personal_records": "db-pr"}
         calls.append(kwargs)
-        return {
-            data_type: _sync_result()
-            for data_type in kwargs["data_types"]
-        }
+        return {data_type: _sync_result() for data_type in kwargs["data_types"]}
 
     monkeypatch.setattr(
         notion_tasks,
-        "get_notion_settings",
-        lambda: SimpleNamespace(token="secret"),
+        "find_user",
+        lambda session, display_name: SimpleNamespace(id=7),
+    )
+    monkeypatch.setattr(
+        notion_tasks,
+        "notion_sync_config",
+        lambda session, user_id: (
+            "secret",
+            {"activities": "db-act", "personal_records": "db-pr"},
+        ),
     )
     monkeypatch.setattr(notion_tasks, "Client", lambda *, auth: ("client", auth))
     monkeypatch.setattr(
@@ -103,13 +108,55 @@ def test_notion_user_task_bounds_dated_rows_but_replays_all_personal_records(
 
 
 def test_notion_user_task_requires_token_for_writes(monkeypatch):
-    monkeypatch.setattr(
-        notion_tasks,
-        "get_notion_settings",
-        lambda: SimpleNamespace(token=None),
-    )
+    class FakeSession:
+        def __init__(self, engine):
+            pass
 
-    with pytest.raises(ValueError, match="NOTION_TOKEN"):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+    monkeypatch.setattr(
+        notion_tasks, "find_user", lambda session, display_name: SimpleNamespace(id=7)
+    )
+    monkeypatch.setattr(
+        notion_tasks, "notion_sync_config", lambda session, user_id: (None, {})
+    )
+    monkeypatch.setattr(notion_tasks, "get_engine", lambda: "engine")
+    monkeypatch.setattr(notion_tasks, "Session", FakeSession)
+
+    with pytest.raises(ValueError, match="token"):
+        notion_tasks.sync_notion_user_task.fn(
+            user="mike",
+            data_types=["activities"],
+            start_date=date(2026, 7, 29),
+            end_date=date(2026, 7, 30),
+        )
+
+
+def test_notion_user_task_requires_databases(monkeypatch):
+    class FakeSession:
+        def __init__(self, engine):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+    monkeypatch.setattr(
+        notion_tasks, "find_user", lambda session, display_name: SimpleNamespace(id=7)
+    )
+    monkeypatch.setattr(
+        notion_tasks, "notion_sync_config", lambda session, user_id: ("secret", {})
+    )
+    monkeypatch.setattr(notion_tasks, "get_engine", lambda: "engine")
+    monkeypatch.setattr(notion_tasks, "Session", FakeSession)
+
+    with pytest.raises(ValueError, match="no databases"):
         notion_tasks.sync_notion_user_task.fn(
             user="mike",
             data_types=["activities"],
