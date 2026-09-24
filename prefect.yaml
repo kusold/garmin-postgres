@@ -94,7 +94,7 @@ deployments:
       limit: 1
       collision_strategy: ENQUEUE
     parameters:
-      user: null
+      user: "f65ac324-cbcf-4438-8abe-30e8fedeec4d"
       data_types: null
       days_back: 2
       dry_run: false

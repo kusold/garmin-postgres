@@ -13,6 +13,23 @@ from garmin_orchestrator.notion_flows import (
 )
 
 
+def make_fake_session_class(context=None, engines=None):
+    """Build a Session stand-in whose context manager yields `context` (or self)."""
+
+    class FakeSession:
+        def __init__(self, engine):
+            if engines is not None:
+                engines.append(engine)
+
+        def __enter__(self):
+            return context if context is not None else self
+
+        def __exit__(self, *_):
+            return None
+
+    return FakeSession
+
+
 def _sync_result(status: str = "success", **overrides):
     return {
         "status": status,
@@ -44,16 +61,8 @@ def test_notion_user_task_bounds_dated_rows_but_replays_all_personal_records(
 ):
     calls = []
     session = object()
-
-    class FakeSession:
-        def __init__(self, engine):
-            assert engine == "engine"
-
-        def __enter__(self):
-            return session
-
-        def __exit__(self, *_):
-            return None
+    engines = []
+    FakeSession = make_fake_session_class(context=session, engines=engines)
 
     def fake_run_sync(current_session, sink, targets, **kwargs):
         assert current_session is session
@@ -93,6 +102,7 @@ def test_notion_user_task_bounds_dated_rows_but_replays_all_personal_records(
     )
 
     assert list(result) == ["activities", "daily_steps", "personal_records"]
+    assert engines == ["engine", "engine"]
     assert calls == [
         {
             "data_types": ["activities", "daily_steps"],
@@ -107,17 +117,21 @@ def test_notion_user_task_bounds_dated_rows_but_replays_all_personal_records(
     ]
 
 
+def test_notion_user_task_rejects_unknown_user(monkeypatch):
+    monkeypatch.setattr(notion_tasks, "find_user", lambda session, display_name: None)
+    monkeypatch.setattr(notion_tasks, "get_engine", lambda: "engine")
+    monkeypatch.setattr(notion_tasks, "Session", make_fake_session_class())
+
+    with pytest.raises(ValueError, match="No Garmin user matches"):
+        notion_tasks.sync_notion_user_task.fn(
+            user="ghost",
+            data_types=["activities"],
+            start_date=date(2026, 7, 29),
+            end_date=date(2026, 7, 30),
+        )
+
+
 def test_notion_user_task_requires_token_for_writes(monkeypatch):
-    class FakeSession:
-        def __init__(self, engine):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_):
-            return None
-
     monkeypatch.setattr(
         notion_tasks, "find_user", lambda session, display_name: SimpleNamespace(id=7)
     )
@@ -125,7 +139,7 @@ def test_notion_user_task_requires_token_for_writes(monkeypatch):
         notion_tasks, "notion_sync_config", lambda session, user_id: (None, {})
     )
     monkeypatch.setattr(notion_tasks, "get_engine", lambda: "engine")
-    monkeypatch.setattr(notion_tasks, "Session", FakeSession)
+    monkeypatch.setattr(notion_tasks, "Session", make_fake_session_class())
 
     with pytest.raises(ValueError, match="token"):
         notion_tasks.sync_notion_user_task.fn(
@@ -137,16 +151,6 @@ def test_notion_user_task_requires_token_for_writes(monkeypatch):
 
 
 def test_notion_user_task_requires_databases(monkeypatch):
-    class FakeSession:
-        def __init__(self, engine):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_):
-            return None
-
     monkeypatch.setattr(
         notion_tasks, "find_user", lambda session, display_name: SimpleNamespace(id=7)
     )
@@ -154,7 +158,7 @@ def test_notion_user_task_requires_databases(monkeypatch):
         notion_tasks, "notion_sync_config", lambda session, user_id: ("secret", {})
     )
     monkeypatch.setattr(notion_tasks, "get_engine", lambda: "engine")
-    monkeypatch.setattr(notion_tasks, "Session", FakeSession)
+    monkeypatch.setattr(notion_tasks, "Session", make_fake_session_class())
 
     with pytest.raises(ValueError, match="no databases"):
         notion_tasks.sync_notion_user_task.fn(
@@ -186,6 +190,11 @@ def test_notion_flow_infers_single_active_user_and_returns_summary(monkeypatch):
         notion_flows,
         "resolve_active_users_task",
         lambda **kwargs: [{"id": 1, "display_name": "mike"}],
+    )
+    monkeypatch.setattr(
+        notion_flows,
+        "resolve_notion_configured_users_task",
+        lambda candidates: candidates,
     )
 
     def fake_sync(**kwargs):
@@ -229,7 +238,9 @@ def test_notion_flow_infers_single_active_user_and_returns_summary(monkeypatch):
     assert artifacts == [result]
 
 
-def test_notion_flow_requires_user_when_multiple_are_active(monkeypatch):
+def test_notion_flow_syncs_multiple_configured_users_when_unpinned(monkeypatch):
+    calls = []
+
     monkeypatch.setattr(notion_flows, "ensure_database_ready_task", lambda: None)
     monkeypatch.setattr(
         notion_flows,
@@ -244,11 +255,65 @@ def test_notion_flow_requires_user_when_multiple_are_active(monkeypatch):
         "resolve_active_users_task",
         lambda **kwargs: [
             {"id": 1, "display_name": "mike"},
-            {"id": 2, "display_name": "other"},
+            {"id": 2, "display_name": "katie"},
         ],
     )
+    monkeypatch.setattr(
+        notion_flows,
+        "resolve_notion_configured_users_task",
+        lambda candidates: candidates,
+    )
 
-    with pytest.raises(ValueError, match="single-user"):
+    def fake_sync(**kwargs):
+        calls.append(kwargs)
+        results = {
+            "activities": _sync_result(),
+            "daily_steps": _sync_result(),
+            "personal_records": _sync_result(),
+        }
+        if kwargs["user"] == "mike":
+            results["daily_steps"] = _sync_result(
+                "partial", created=0, errors=1, error="bad | row"
+            )
+        return results
+
+    monkeypatch.setattr(notion_flows, "sync_notion_user_task", fake_sync)
+    monkeypatch.setattr(
+        notion_flows, "_publish_summary_artifact", lambda summary: None
+    )
+
+    result = notion_sync_flow.fn()
+
+    assert [call["user"] for call in calls] == ["mike", "katie"]
+    assert [row["user"] for row in result["results"]] == ["mike", "katie"]
+    assert result["results"][0]["daily_steps"]["status"] == "partial"
+    assert result["results"][1]["daily_steps"]["status"] == "success"
+    assert result["errors"] == 0
+    assert result["partials"] == 1
+
+
+def test_notion_flow_errors_when_no_user_has_notion_target(monkeypatch):
+    monkeypatch.setattr(notion_flows, "ensure_database_ready_task", lambda: None)
+    monkeypatch.setattr(
+        notion_flows,
+        "resolve_date_window_task",
+        lambda **kwargs: {
+            "start_date": date(2026, 7, 29),
+            "end_date": date(2026, 7, 30),
+        },
+    )
+    monkeypatch.setattr(
+        notion_flows,
+        "resolve_active_users_task",
+        lambda **kwargs: [{"id": 1, "display_name": "mike"}],
+    )
+    monkeypatch.setattr(
+        notion_flows,
+        "resolve_notion_configured_users_task",
+        lambda candidates: [],
+    )
+
+    with pytest.raises(ValueError, match="sync target"):
         notion_sync_flow.fn()
 
 
@@ -267,6 +332,11 @@ def test_notion_flow_failure_policy_raises_for_partial_when_requested(monkeypatc
         notion_flows,
         "resolve_active_users_task",
         lambda **kwargs: [{"id": 1, "display_name": "mike"}],
+    )
+    monkeypatch.setattr(
+        notion_flows,
+        "resolve_notion_configured_users_task",
+        lambda candidates: candidates,
     )
     monkeypatch.setattr(
         notion_flows,

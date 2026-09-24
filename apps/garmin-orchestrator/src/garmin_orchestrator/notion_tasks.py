@@ -7,9 +7,11 @@ from typing import Any
 from notion_client import Client
 from prefect import get_run_logger, task
 from prefect.exceptions import MissingContextError
+from sqlalchemy import select
 from sqlmodel import Session
 
 from garmin_postgres.db import get_engine
+from garmin_postgres.models.sync_target import SyncTarget
 from notion_sync.notion import NotionSink
 from notion_sync.sync import run_sync
 from notion_sync.targets import find_user, notion_sync_config
@@ -26,6 +28,18 @@ def _get_logger():
         return get_run_logger()
     except MissingContextError:
         return logger
+
+
+@task(name="resolve-notion-configured-users")
+def resolve_notion_configured_users_task(
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Filter candidate users down to those with a 'notion' sync target row."""
+    engine = get_engine()
+    with Session(engine) as session:
+        stmt = select(SyncTarget.user_id).where(SyncTarget.target == "notion")
+        configured_ids = set(session.scalars(stmt).all())
+    return [u for u in candidates if u["id"] in configured_ids]
 
 
 @task(
@@ -62,7 +76,8 @@ def sync_notion_user_task(
         )
     if not targets:
         raise ValueError(
-            f"sync_targets 'notion' config for user={user!r} has no databases"
+            f"sync_targets 'notion' config for user={user!r} has no databases "
+            "(expected keys: activities, daily_steps, personal_records)"
         )
 
     run_logger.info(

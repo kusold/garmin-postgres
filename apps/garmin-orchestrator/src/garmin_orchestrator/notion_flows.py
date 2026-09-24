@@ -10,7 +10,10 @@ from prefect.exceptions import MissingContextError
 
 from notion_sync.sync import DATA_TYPES
 
-from garmin_orchestrator.notion_tasks import sync_notion_user_task
+from garmin_orchestrator.notion_tasks import (
+    resolve_notion_configured_users_task,
+    sync_notion_user_task,
+)
 from garmin_orchestrator.tasks import (
     ensure_database_ready_task,
     resolve_active_users_task,
@@ -123,7 +126,7 @@ def notion_sync_flow(
     dry_run: bool = False,
     fail_on_partial: bool = False,
 ) -> dict[str, Any]:
-    """Sync archived PostgreSQL data for one Garmin user to Notion."""
+    """Sync archived PostgreSQL data for every Garmin user with a Notion target."""
     run_logger = _get_logger()
     selected_data_types = normalize_notion_data_types(data_types)
 
@@ -133,33 +136,33 @@ def notion_sync_flow(
         end_date=end_date,
         days_back=days_back,
     )
-    users = resolve_active_users_task(user_filter=user)
-    if not users:
+    candidates = resolve_active_users_task(user_filter=user)
+    if user is not None and not candidates:
         raise ValueError(f"No active Garmin user matched user={user!r}")
-    if user is None and len(users) != 1:
-        raise ValueError(
-            "Notion sync is single-user; pass user when more than one active "
-            "Garmin user exists"
-        )
+    users = resolve_notion_configured_users_task(candidates)
+    if not users:
+        raise ValueError("No active Garmin user has a 'notion' sync target configured")
 
     run_logger.info(
-        "Starting PostgreSQL to Notion flow: window=%s..%s user=%s "
+        "Starting PostgreSQL to Notion flow: window=%s..%s users=%s "
         "data_types=%s dry_run=%s fail_on_partial=%s",
         window["start_date"],
         window["end_date"],
-        users[0]["display_name"],
+        [u["display_name"] for u in users],
         selected_data_types,
         dry_run,
         fail_on_partial,
     )
-    notion_results = sync_notion_user_task(
-        user=users[0]["display_name"],
-        data_types=selected_data_types,
-        start_date=window["start_date"],
-        end_date=window["end_date"],
-        dry_run=dry_run,
-    )
-    results = [{"user": users[0]["display_name"], **notion_results}]
+    results = []
+    for sync_user in users:
+        notion_results = sync_notion_user_task(
+            user=sync_user["display_name"],
+            data_types=selected_data_types,
+            start_date=window["start_date"],
+            end_date=window["end_date"],
+            dry_run=dry_run,
+        )
+        results.append({"user": sync_user["display_name"], **notion_results})
     errors, partials = _failure_counts(results)
     summary = {
         "window": {
@@ -181,11 +184,11 @@ def notion_sync_flow(
         )
 
     run_logger.info(
-        "PostgreSQL to Notion flow completed: user=%s errors=%s partials=%s "
+        "PostgreSQL to Notion flow completed: users=%s errors=%s partials=%s "
         "results=%s",
-        users[0]["display_name"],
+        [u["display_name"] for u in users],
         errors,
         partials,
-        notion_results,
+        results,
     )
     return summary
