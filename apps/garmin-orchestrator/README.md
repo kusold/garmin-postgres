@@ -186,7 +186,8 @@ Actions secrets. The production worker exposes its Garmin env file at:
 
 `prefect.yaml` mounts the configured `GARMIN_CONNECT_ENV_FILE` into each Docker
 job container at `/app/.env`, allowing the existing settings loaders to read
-`DATABASE_URL` and the `NOTION_*` values documented in the root README. The
+`DATABASE_URL`, the only value the env file needs — Notion targets are
+configured per user in the `sync_targets` table (see the root README). The
 deploy workflow only passes the file path, defaulting to the production path
 above. Set a repository variable named `GARMIN_CONNECT_ENV_FILE` to override
 the path without changing deployment metadata.
