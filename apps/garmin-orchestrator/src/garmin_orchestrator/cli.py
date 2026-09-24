@@ -305,7 +305,7 @@ def run_notion_sync(
         typer.Option(
             "--user",
             "-u",
-            help="Garmin display name; inferred when exactly one user is active",
+            help="Garmin display name; when omitted, every active user with a Notion sync target is synced",
         ),
     ] = None,
     days_back: Annotated[
