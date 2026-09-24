@@ -72,6 +72,9 @@ class FakeScalarResult:
     def all(self):
         return self.rows
 
+    def first(self):
+        return self.rows[0] if self.rows else None
+
 
 class FakeSession:
     """Fake SQLAlchemy session. ``rows`` is a list of row-lists popped in order."""
@@ -253,11 +256,111 @@ def test_notion_sync_run_requires_user():
     from notion_sync.cli import app
 
     result = CliRunner().invoke(app, ["run", "--dry-run"])
-    output = _strip_ansi(result.output)
 
     assert result.exit_code != 0
-    assert "Missing option" in output
-    assert "--user" in output
+    assert "Missing option" in _strip_ansi(result.output)
+    assert "--user" in _strip_ansi(result.output)
+
+
+class _FakeDbUser:
+    id = 7
+
+
+def _make_cli_session(scalar_rows):
+    """Return a fake ``sqlmodel.Session`` class for CLI tests.
+
+    The CLI constructs ``Session(engine)`` and enters it as a context manager;
+    ``scalars(...)`` always returns ``FakeScalarResult(scalar_rows)``.
+    """
+
+    class _CliFakeSession:
+        def __init__(self, engine):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def scalars(self, stmt):
+            return FakeScalarResult(scalar_rows)
+
+    return _CliFakeSession
+
+
+def test_cli_run_errors_for_unknown_user(monkeypatch):
+    from notion_sync import cli
+
+    monkeypatch.setattr(cli, "get_engine", lambda: object())
+    monkeypatch.setattr(cli, "Session", _make_cli_session([]))
+
+    from notion_sync.cli import app
+
+    result = CliRunner().invoke(
+        app, ["run", "--user", "nobody", "--days-back", "1", "--dry-run"]
+    )
+
+    assert result.exit_code != 0
+    assert "No Garmin user matches" in _strip_ansi(result.output)
+
+
+def test_cli_run_requires_token_for_non_dry_run(monkeypatch):
+    from notion_sync import cli
+
+    monkeypatch.setattr(cli, "get_engine", lambda: object())
+    monkeypatch.setattr(cli, "Session", _make_cli_session([_FakeDbUser()]))
+    monkeypatch.setattr(
+        cli, "notion_sync_config", lambda session, user_id: (None, {"activities": "db"})
+    )
+
+    from notion_sync.cli import app
+
+    result = CliRunner().invoke(
+        app, ["run", "--user", "somebody", "--days-back", "1"]
+    )
+
+    assert result.exit_code != 0
+    assert "token" in _strip_ansi(result.output)
+
+
+def test_cli_run_passes_resolved_targets_and_user_to_run_sync(monkeypatch):
+    from notion_sync import cli
+
+    FakeSession = _make_cli_session([_FakeDbUser()])
+    captured = {}
+
+    def fake_run_sync(session, sink, targets, **kwargs):
+        captured["session"] = session
+        captured["sink"] = sink
+        captured["targets"] = targets
+        captured["kwargs"] = kwargs
+        return {"activities": {"status": "ok"}}
+
+    monkeypatch.setattr(cli, "get_engine", lambda: object())
+    monkeypatch.setattr(cli, "Session", FakeSession)
+    monkeypatch.setattr(
+        cli, "notion_sync_config", lambda session, user_id: ("tok", {"activities": "db"})
+    )
+    monkeypatch.setattr(cli, "Client", lambda *, auth: object())
+    monkeypatch.setattr(cli, "run_sync", fake_run_sync)
+
+    from notion_sync.cli import app
+
+    result = CliRunner().invoke(
+        app, ["run", "--user", "somebody", "--days-back", "1"]
+    )
+
+    assert result.exit_code == 0
+    assert captured["targets"] == {"activities": "db"}
+    assert captured["kwargs"]["user_filter"] == "somebody"
+    assert captured["kwargs"]["data_types"] is None
+    assert captured["kwargs"]["start_date"] is not None
+    assert captured["kwargs"]["end_date"] is not None
+    assert isinstance(captured["session"], FakeSession)
+    assert isinstance(captured["sink"], NotionSink)
+    assert captured["sink"].dry_run is False
+    assert "activities" in _strip_ansi(result.output)
 
 
 # --------------------------------------------------------------------------- #

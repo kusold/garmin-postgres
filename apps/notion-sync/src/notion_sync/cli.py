@@ -2,13 +2,15 @@ from datetime import date, timedelta
 
 import typer
 from notion_client import Client
+from sqlalchemy import select
 from sqlmodel import Session
 
 from garmin_postgres.config import get_settings as get_db_settings
 from garmin_postgres.db import get_engine
-from notion_sync.config import get_settings
+from garmin_postgres.models.user import User
 from notion_sync.notion import NotionSink
 from notion_sync.sync import DATA_TYPES, run_sync
+from notion_sync.targets import find_user, notion_sync_config
 
 app = typer.Typer(name="notion-sync", help="Sync archived Garmin data from PostgreSQL to Notion.")
 
@@ -46,28 +48,38 @@ def run(
     data_type: list[str] = typer.Option(None, "--data-type", "-t", help="Data types to sync (activities, daily_steps, personal_records)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Query data but don't read or write Notion pages"),
 ) -> None:
-    """Sync archived data to Notion."""
+    """Sync archived data to Notion for one user's configured databases."""
     selected = data_type if data_type else None
     invalid = sorted(set(selected or []) - set(DATA_TYPES))
     if invalid:
         typer.echo(f"Unsupported data type(s): {', '.join(invalid)}", err=True)
         raise typer.Exit(1)
 
-    settings = get_settings()
-    if not settings.token and not dry_run:
-        typer.echo("NOTION_TOKEN is required unless --dry-run is used", err=True)
-        raise typer.Exit(1)
-
     parsed_start, parsed_end = _date_range(days_back, start_date, end_date)
-    client = Client(auth=settings.token or "dry-run")
-    sink = NotionSink(client, dry_run=dry_run)
 
     engine = get_engine()
+    with Session(engine) as session:
+        db_user = find_user(session, user)
+        if db_user is None:
+            typer.echo(f"No Garmin user matches --user {user!r}", err=True)
+            raise typer.Exit(1)
+        token, targets = notion_sync_config(session, db_user.id)
+
+    if not token and not dry_run:
+        typer.echo(
+            f"sync_targets 'notion' config for user {user!r} has no token "
+            "(required unless --dry-run is used)",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    client = Client(auth=token or "dry-run")
+    sink = NotionSink(client, dry_run=dry_run)
     with Session(engine) as session:
         results = run_sync(
             session,
             sink,
-            settings,
+            targets,
             data_types=selected,
             start_date=parsed_start,
             end_date=parsed_end,
@@ -80,13 +92,16 @@ def run(
 
 @app.command()
 def config() -> None:
-    """Show the database URL and configured Notion targets."""
-    notion_settings = get_settings()
+    """Show the database URL and each user's configured Notion targets."""
     db_settings = get_db_settings()
     typer.echo(f"database_url: {db_settings.database_url}")
-    typer.echo(f"activities: {'configured' if notion_settings.activities_database_id else 'missing'}")
-    typer.echo(f"daily_steps: {'configured' if notion_settings.daily_steps_database_id else 'missing'}")
-    typer.echo(f"personal_records: {'configured' if notion_settings.personal_records_database_id else 'missing'}")
+    engine = get_engine()
+    with Session(engine) as session:
+        for db_user in session.scalars(select(User).order_by(User.id)).all():
+            token, targets = notion_sync_config(session, db_user.id)
+            configured = ", ".join(f"{k}={v}" for k, v in sorted(targets.items())) or "none"
+            token_state = "token: yes" if token else "token: no"
+            typer.echo(f"{db_user.garmin_display_name}: {configured} ({token_state})")
 
 
 if __name__ == "__main__":
