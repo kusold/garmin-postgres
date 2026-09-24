@@ -126,6 +126,45 @@ def test_activity_page_maps_postgres_activity_to_notion_properties():
     assert icon is not None
 
 
+def test_activity_page_maps_summary_dto_payload_shape():
+    activity = Activity(
+        user_id=1,
+        activity_id=23318629542,
+        activity_type="walking",
+        start_time=datetime(2026, 6, 20, 14, 26, 41, tzinfo=timezone.utc),
+        raw_json={
+            "activityId": 23318629542,
+            "activityName": "Lakewood Walking",
+            "activityTypeDTO": {"typeId": 3, "typeKey": "walking"},
+            "summaryDTO": {
+                "startTimeGMT": "2026-06-20T14:26:41.0",
+                "distance": 2559.2,
+                "duration": 2548.901,
+                "calories": 146.0,
+                "averageSpeed": 1.003999948,
+            },
+            "metadataDTO": {"favorite": True, "personalRecord": False},
+        },
+    )
+
+    properties, filter_payload, icon = activity_page(activity)
+
+    assert filter_payload == {
+        "property": "Garmin Activity ID",
+        "number": {"equals": 23318629542},
+    }
+    assert properties["Activity Name"]["title"][0]["text"]["content"] == "Lakewood Walking"
+    assert properties["Activity Type"]["select"]["name"] == "Walking"
+    assert properties["Distance (km)"]["number"] == 2.56
+    assert properties["Duration (min)"]["number"] == 42.48
+    assert properties["Calories"]["number"] == 146
+    assert properties["Avg Pace"]["rich_text"][0]["text"]["content"] == "16:36 min/km"
+    assert properties["Fav"]["checkbox"] is True
+    assert properties["PR"]["checkbox"] is False
+    assert properties["Date"]["date"]["start"] == "2026-06-20T14:26:41+00:00"
+    assert icon is not None
+
+
 def test_daily_steps_page_maps_daily_summary_raw_json():
     summary = DailySummary(
         user_id=1,
@@ -207,6 +246,7 @@ def test_run_sync_skips_unconfigured_databases():
     assert result["activities"]["status"] == "skipped"
     assert result["daily_steps"]["status"] == "skipped"
     assert result["personal_records"]["status"] == "skipped"
+    assert "sync_targets" in result["activities"]["error"]
 
 
 def test_notion_sync_run_requires_user():
