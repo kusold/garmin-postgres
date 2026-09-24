@@ -10,7 +10,6 @@ from garmin_postgres.models.activity import Activity
 from garmin_postgres.models.daily_summary import DailySummary
 from garmin_postgres.models.personal_record import PersonalRecord
 from garmin_postgres.models.user import User
-from notion_sync.config import NotionSettings
 from notion_sync.mappers import activity_page, daily_steps_page, personal_record_page
 from notion_sync.notion import NotionSink
 
@@ -91,7 +90,7 @@ def _sync_table(
     sink: NotionSink,
     database_id: str | None,
     *,
-    not_configured_error: str,
+    label: str,
     model,
     order_column,
     date_window: Callable[..., object],
@@ -101,7 +100,11 @@ def _sync_table(
     user_filter: str | None = None,
 ) -> SyncResult:
     if not database_id:
-        return SyncResult(status="skipped", skipped=1, error=not_configured_error)
+        return SyncResult(
+            status="skipped",
+            skipped=1,
+            error=f"No Notion database configured for {label} in sync_targets",
+        )
 
     stmt = select(model).order_by(order_column)
     stmt = _users_clause(stmt, user_filter)
@@ -151,7 +154,7 @@ def sync_activities(
         session,
         sink,
         database_id,
-        not_configured_error="NOTION_ACTIVITIES_DB_ID is not configured",
+        label="activities",
         model=Activity,
         order_column=Activity.start_time,
         date_window=_apply_datetime_window,
@@ -175,7 +178,7 @@ def sync_daily_steps(
         session,
         sink,
         database_id,
-        not_configured_error="NOTION_DAILY_STEPS_DB_ID is not configured",
+        label="daily_steps",
         model=DailySummary,
         order_column=DailySummary.calendar_date,
         date_window=_apply_date_window,
@@ -199,7 +202,7 @@ def sync_personal_records(
         session,
         sink,
         database_id,
-        not_configured_error="NOTION_PERSONAL_RECORDS_DB_ID is not configured",
+        label="personal_records",
         model=PersonalRecord,
         order_column=PersonalRecord.record_date,
         date_window=_apply_date_window,
@@ -213,7 +216,7 @@ def sync_personal_records(
 def run_sync(
     session: Session,
     sink: NotionSink,
-    settings: NotionSettings,
+    targets: dict[str, str],
     *,
     data_types: list[str] | None = None,
     start_date: date | None = None,
@@ -226,7 +229,7 @@ def run_sync(
         results["activities"] = sync_activities(
             session,
             sink,
-            settings.activities_database_id,
+            targets.get("activities"),
             start_date=start_date,
             end_date=end_date,
             user_filter=user_filter,
@@ -235,7 +238,7 @@ def run_sync(
         results["daily_steps"] = sync_daily_steps(
             session,
             sink,
-            settings.daily_steps_database_id,
+            targets.get("daily_steps"),
             start_date=start_date,
             end_date=end_date,
             user_filter=user_filter,
@@ -244,7 +247,7 @@ def run_sync(
         results["personal_records"] = sync_personal_records(
             session,
             sink,
-            settings.personal_records_database_id,
+            targets.get("personal_records"),
             start_date=start_date,
             end_date=end_date,
             user_filter=user_filter,

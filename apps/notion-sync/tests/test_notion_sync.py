@@ -10,7 +10,6 @@ from typer.testing import CliRunner
 from garmin_postgres.models.activity import Activity
 from garmin_postgres.models.daily_summary import DailySummary
 from garmin_postgres.models.personal_record import PersonalRecord
-from notion_sync.config import NotionSettings, get_settings
 from notion_sync.mappers import activity_page, daily_steps_page, personal_record_page
 from notion_sync.notion import NotionSink
 from notion_sync.sync import (
@@ -202,58 +201,12 @@ def test_notion_sink_dry_run_queries_but_does_not_write():
 def test_run_sync_skips_unconfigured_databases():
     session = FakeSession(rows=[])
     sink = NotionSink(FakeNotionClient(), dry_run=True)
-    settings = NotionSettings(
-        token=None,
-        activities_database_id=None,
-        daily_steps_database_id=None,
-        personal_records_database_id=None,
-    )
 
-    result = run_sync(session, sink, settings)
+    result = run_sync(session, sink, {})
 
     assert result["activities"]["status"] == "skipped"
     assert result["daily_steps"]["status"] == "skipped"
     assert result["personal_records"]["status"] == "skipped"
-
-
-def test_notion_settings_load_from_dotenv(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("NOTION_TOKEN", raising=False)
-    monkeypatch.delenv("NOTION_ACTIVITIES_DB_ID", raising=False)
-    monkeypatch.delenv("NOTION_DAILY_STEPS_DB_ID", raising=False)
-    monkeypatch.delenv("NOTION_PERSONAL_RECORDS_DB_ID", raising=False)
-    monkeypatch.delenv("NOTION_TIMEZONE", raising=False)
-    (tmp_path / ".env").write_text(
-        "\n".join(
-            [
-                "NOTION_TOKEN=from-file",
-                "NOTION_ACTIVITIES_DB_ID=activities-db",
-                "NOTION_DAILY_STEPS_DB_ID=steps-db",
-                "NOTION_PERSONAL_RECORDS_DB_ID=records-db",
-            ]
-        )
-    )
-
-    settings = get_settings()
-
-    assert settings.token == "from-file"
-    assert settings.activities_database_id == "activities-db"
-    assert settings.daily_steps_database_id == "steps-db"
-    assert settings.personal_records_database_id == "records-db"
-
-
-def test_notion_settings_process_env_overrides_dotenv(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / ".env").write_text("NOTION_TOKEN=from-file\n")
-    monkeypatch.setenv("NOTION_TOKEN", "from-env")
-
-    settings = get_settings()
-
-    assert settings.token == "from-env"
-
-
-def test_notion_settings_loads_docker_mounted_env_file():
-    assert NotionSettings.model_config["env_file"] == (".env", "/app/.env")
 
 
 def test_notion_sync_run_requires_user():
@@ -271,23 +224,23 @@ def test_notion_sync_run_requires_user():
 # run_sync create / update / error paths
 # --------------------------------------------------------------------------- #
 
-def _settings_with_activities():
-    """Build a NotionSettings with activities configured (env file ignored for test isolation)."""
-    return NotionSettings(_env_file=None, token="tok", activities_database_id="activities-db")
+def _targets_with_activities():
+    """Build a targets mapping with activities configured."""
+    return {"activities": "activities-db"}
 
 
-def _settings_with_personal_records():
-    """Build a NotionSettings with personal records configured."""
-    return NotionSettings(_env_file=None, token="tok", personal_records_database_id="records-db")
+def _targets_with_personal_records():
+    """Build a targets mapping with personal records configured."""
+    return {"personal_records": "records-db"}
 
 
 def test_run_sync_creates_page_when_no_existing_page():
     session = FakeSession(rows=[[_make_activity()]])
     client = FakeNotionClient(results=[])
     sink = NotionSink(client, dry_run=False, min_interval=0.0, sleep=lambda _s: None)
-    settings = _settings_with_activities()
+    targets = _targets_with_activities()
 
-    result = run_sync(session, sink, settings, data_types=["activities"])
+    result = run_sync(session, sink, targets, data_types=["activities"])
 
     info = result["activities"]
     assert info["status"] == "success"
@@ -304,9 +257,9 @@ def test_run_sync_updates_page_when_existing_page_exists():
     session = FakeSession(rows=[[_make_activity()]])
     client = FakeNotionClient(results=[{"id": "page-1"}])
     sink = NotionSink(client, dry_run=False, min_interval=0.0, sleep=lambda _s: None)
-    settings = _settings_with_activities()
+    targets = _targets_with_activities()
 
-    result = run_sync(session, sink, settings, data_types=["activities"])
+    result = run_sync(session, sink, targets, data_types=["activities"])
 
     info = result["activities"]
     assert info["status"] == "success"
@@ -342,10 +295,10 @@ def test_run_sync_logs_error_and_marks_partial_when_a_row_fails(caplog):
 
     client = FakeNotionClient(query_side_effect=query_side_effect)
     sink = NotionSink(client, dry_run=False, min_interval=0.0, sleep=lambda _s: None)
-    settings = _settings_with_activities()
+    targets = _targets_with_activities()
 
     caplog.set_level(logging.DEBUG, logger="notion_sync.sync")
-    result = run_sync(session, sink, settings, data_types=["activities"])
+    result = run_sync(session, sink, targets, data_types=["activities"])
 
     info = result["activities"]
     assert info["status"] == "partial"
@@ -387,9 +340,9 @@ def test_run_sync_updates_same_personal_record_type_to_latest_value():
 
     client = FakeNotionClient(query_side_effect=query_side_effect)
     sink = NotionSink(client, dry_run=False, min_interval=0.0, sleep=lambda _s: None)
-    settings = _settings_with_personal_records()
+    targets = _targets_with_personal_records()
 
-    result = run_sync(session, sink, settings, data_types=["personal_records"])
+    result = run_sync(session, sink, targets, data_types=["personal_records"])
 
     info = result["personal_records"]
     assert info["status"] == "success"
