@@ -4,6 +4,7 @@ from garmin_postgres.models.activity_file import ActivityFile
 from garmin_postgres.models.base import BaseModel
 from garmin_postgres.models.daily_summary import DailySummary
 from garmin_postgres.models.personal_record import PersonalRecord
+from garmin_postgres.models.sync_target import SyncTarget
 from garmin_postgres.models.user import User
 
 __all__ = [
@@ -13,5 +14,6 @@ __all__ = [
     "BaseModel",
     "DailySummary",
     "PersonalRecord",
+    "SyncTarget",
     "User",
 ]
