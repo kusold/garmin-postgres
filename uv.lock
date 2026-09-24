@@ -513,6 +513,7 @@ source = { editable = "apps/garmin-orchestrator" }
 dependencies = [
     { name = "garmin-postgres-core" },
     { name = "garmin-sync" },
+    { name = "notion-sync" },
     { name = "prefect" },
     { name = "typer" },
 ]
@@ -521,6 +522,7 @@ dependencies = [
 requires-dist = [
     { name = "garmin-postgres-core", editable = "packages/garmin-postgres-core" },
     { name = "garmin-sync", editable = "apps/garmin-sync" },
+    { name = "notion-sync", editable = "apps/notion-sync" },
     { name = "prefect", specifier = "==3.8.0" },
     { name = "typer", specifier = ">=0.15.0" },
 ]

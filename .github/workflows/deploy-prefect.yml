@@ -15,6 +15,7 @@ on:
       - "flake.lock"
       - "apps/garmin-orchestrator/**"
       - "apps/garmin-sync/**"
+      - "apps/notion-sync/**"
       - "packages/garmin-postgres-core/**"
   workflow_dispatch:
 

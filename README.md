@@ -57,14 +57,27 @@ Supported data types:
 - `daily_steps`
 - `personal_records`
 
-Configure Notion in `.env` or exported environment variables:
+Notion is configured per user in the database — there are no `NOTION_*`
+environment variables. Each `sync_targets` row holds one user's integration
+token and Notion database IDs. Seed a user (idempotent):
 
-```bash
-export NOTION_TOKEN=secret_...
-export NOTION_ACTIVITIES_DB_ID=...
-export NOTION_DAILY_STEPS_DB_ID=...
-export NOTION_PERSONAL_RECORDS_DB_ID=...
+```sql
+INSERT INTO sync_targets (user_id, target, config_json) VALUES
+  (1, 'notion', '{
+     "token": "secret_...",
+     "databases": {
+       "activities": "<activities-database-id>",
+       "daily_steps": "<daily-steps-database-id>",
+       "personal_records": "<personal-records-database-id>",
+       "sleep": "<sleep-database-id>"
+     }
+  }')
+ON CONFLICT (user_id, target) DO UPDATE SET config_json = excluded.config_json;
 ```
+
+Each Notion database must be shared with the integration and already contain
+the expected properties — see "Notion-Side Prerequisites" in
+`specs/10-per-user-notion-sync.md` for the checklist.
 
 Run all configured syncs:
 
@@ -76,6 +89,28 @@ Run one data type:
 
 ```bash
 uv run notion-sync run --user your-garmin-display-name --data-type personal_records
+```
+
+Run the Prefect flow locally:
+
+```bash
+uv run garmin-orchestrator run notion-sync --user your-garmin-display-name
+```
+
+The `notion-sync` Prefect deployment runs daily at 07:00
+`America/Denver`, after the 06:00 Garmin archive. It syncs the last two
+completed days of activities and daily steps, and refreshes all personal
+records so the latest record for each Garmin `typeId` wins. An unpinned run
+syncs every active Garmin user that has a `notion` target; the scheduled
+deployment pins a single `user` so the daily run stays deterministic.
+
+For the first sync, provide the earliest archived date to backfill existing
+activities and daily steps:
+
+```bash
+uv run garmin-orchestrator run notion-sync \
+  --user your-garmin-display-name \
+  --start-date 2020-01-01
 ```
 
 ## Running Tests

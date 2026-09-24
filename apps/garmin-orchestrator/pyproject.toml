@@ -6,6 +6,7 @@ requires-python = ">=3.13"
 dependencies = [
     "garmin-postgres-core",
     "garmin-sync",
+    "notion-sync",
     "prefect==3.8.0",
     "typer>=0.15.0",
 ]
@@ -16,6 +17,7 @@ garmin-orchestrator = "garmin_orchestrator.cli:app"
 [tool.uv.sources]
 garmin-postgres-core = { workspace = true }
 garmin-sync = { workspace = true }
+notion-sync = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

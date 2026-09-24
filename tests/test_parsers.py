@@ -93,6 +93,21 @@ SAMPLE_ACTIVITY = {
 }
 
 
+SAMPLE_ACTIVITY_SUMMARY_DTO = {
+    "activityId": 23318629542,
+    "activityName": "Lakewood Walking",
+    "activityTypeDTO": {"typeId": 3, "typeKey": "walking"},
+    "summaryDTO": {
+        "startTimeGMT": "2026-06-20T14:26:41.0",
+        "distance": 2559.2,
+        "duration": 2548.901,
+        "calories": 146.0,
+        "averageSpeed": 1.003999948,
+    },
+    "metadataDTO": {"favorite": False},
+}
+
+
 class TestParseActivity:
     def test_parses_valid_response(self):
         result = parse_activity(SAMPLE_ACTIVITY, user_id=1)
@@ -149,6 +164,22 @@ class TestParseActivity:
         assert result.activity_type is None
         assert result.start_time is None
         assert result.raw_json == raw
+
+    def test_parses_start_time_from_summary_dto(self):
+        result = parse_activity(SAMPLE_ACTIVITY_SUMMARY_DTO, user_id=1)
+
+        assert result.start_time == datetime(2026, 6, 20, 14, 26, 41, tzinfo=timezone.utc)
+
+    def test_parses_activity_type_from_activity_type_dto(self):
+        result = parse_activity(SAMPLE_ACTIVITY_SUMMARY_DTO, user_id=1)
+
+        assert result.activity_type == "walking"
+
+    def test_legacy_top_level_keys_still_parse(self):
+        result = parse_activity(SAMPLE_ACTIVITY, user_id=1)
+
+        assert result.start_time is not None
+        assert result.activity_type is not None
 
 
 SAMPLE_PERSONAL_RECORD = {

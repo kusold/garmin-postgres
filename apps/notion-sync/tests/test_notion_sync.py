@@ -10,7 +10,6 @@ from typer.testing import CliRunner
 from garmin_postgres.models.activity import Activity
 from garmin_postgres.models.daily_summary import DailySummary
 from garmin_postgres.models.personal_record import PersonalRecord
-from notion_sync.config import NotionSettings, get_settings
 from notion_sync.mappers import activity_page, daily_steps_page, personal_record_page
 from notion_sync.notion import NotionSink
 from notion_sync.sync import (
@@ -73,6 +72,9 @@ class FakeScalarResult:
     def all(self):
         return self.rows
 
+    def first(self):
+        return self.rows[0] if self.rows else None
+
 
 class FakeSession:
     """Fake SQLAlchemy session. ``rows`` is a list of row-lists popped in order."""
@@ -124,6 +126,45 @@ def test_activity_page_maps_postgres_activity_to_notion_properties():
     assert properties["Distance (km)"]["number"] == 5.0
     assert properties["Duration (min)"]["number"] == 30.0
     assert properties["PR"]["checkbox"] is True
+    assert icon is not None
+
+
+def test_activity_page_maps_summary_dto_payload_shape():
+    activity = Activity(
+        user_id=1,
+        activity_id=23318629542,
+        activity_type="walking",
+        start_time=datetime(2026, 6, 20, 14, 26, 41, tzinfo=timezone.utc),
+        raw_json={
+            "activityId": 23318629542,
+            "activityName": "Lakewood Walking",
+            "activityTypeDTO": {"typeId": 3, "typeKey": "walking"},
+            "summaryDTO": {
+                "startTimeGMT": "2026-06-20T14:26:41.0",
+                "distance": 2559.2,
+                "duration": 2548.901,
+                "calories": 146.0,
+                "averageSpeed": 1.003999948,
+            },
+            "metadataDTO": {"favorite": True, "personalRecord": False},
+        },
+    )
+
+    properties, filter_payload, icon = activity_page(activity)
+
+    assert filter_payload == {
+        "property": "Garmin Activity ID",
+        "number": {"equals": 23318629542},
+    }
+    assert properties["Activity Name"]["title"][0]["text"]["content"] == "Lakewood Walking"
+    assert properties["Activity Type"]["select"]["name"] == "Walking"
+    assert properties["Distance (km)"]["number"] == 2.56
+    assert properties["Duration (min)"]["number"] == 42.48
+    assert properties["Calories"]["number"] == 146
+    assert properties["Avg Pace"]["rich_text"][0]["text"]["content"] == "16:36 min/km"
+    assert properties["Fav"]["checkbox"] is True
+    assert properties["PR"]["checkbox"] is False
+    assert properties["Date"]["date"]["start"] == "2026-06-20T14:26:41+00:00"
     assert icon is not None
 
 
@@ -202,88 +243,147 @@ def test_notion_sink_dry_run_queries_but_does_not_write():
 def test_run_sync_skips_unconfigured_databases():
     session = FakeSession(rows=[])
     sink = NotionSink(FakeNotionClient(), dry_run=True)
-    settings = NotionSettings(
-        token=None,
-        activities_database_id=None,
-        daily_steps_database_id=None,
-        personal_records_database_id=None,
-    )
 
-    result = run_sync(session, sink, settings)
+    result = run_sync(session, sink, {})
 
     assert result["activities"]["status"] == "skipped"
     assert result["daily_steps"]["status"] == "skipped"
     assert result["personal_records"]["status"] == "skipped"
-
-
-def test_notion_settings_load_from_dotenv(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("NOTION_TOKEN", raising=False)
-    monkeypatch.delenv("NOTION_ACTIVITIES_DB_ID", raising=False)
-    monkeypatch.delenv("NOTION_DAILY_STEPS_DB_ID", raising=False)
-    monkeypatch.delenv("NOTION_PERSONAL_RECORDS_DB_ID", raising=False)
-    monkeypatch.delenv("NOTION_TIMEZONE", raising=False)
-    (tmp_path / ".env").write_text(
-        "\n".join(
-            [
-                "NOTION_TOKEN=from-file",
-                "NOTION_ACTIVITIES_DB_ID=activities-db",
-                "NOTION_DAILY_STEPS_DB_ID=steps-db",
-                "NOTION_PERSONAL_RECORDS_DB_ID=records-db",
-            ]
-        )
-    )
-
-    settings = get_settings()
-
-    assert settings.token == "from-file"
-    assert settings.activities_database_id == "activities-db"
-    assert settings.daily_steps_database_id == "steps-db"
-    assert settings.personal_records_database_id == "records-db"
-
-
-def test_notion_settings_process_env_overrides_dotenv(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / ".env").write_text("NOTION_TOKEN=from-file\n")
-    monkeypatch.setenv("NOTION_TOKEN", "from-env")
-
-    settings = get_settings()
-
-    assert settings.token == "from-env"
+    assert "sync_targets" in result["activities"]["error"]
 
 
 def test_notion_sync_run_requires_user():
     from notion_sync.cli import app
 
     result = CliRunner().invoke(app, ["run", "--dry-run"])
-    output = _strip_ansi(result.output)
 
     assert result.exit_code != 0
-    assert "Missing option" in output
-    assert "--user" in output
+    assert "Missing option" in _strip_ansi(result.output)
+    assert "--user" in _strip_ansi(result.output)
+
+
+class _FakeDbUser:
+    id = 7
+
+
+def _make_cli_session(scalar_rows):
+    """Return a fake ``sqlmodel.Session`` class for CLI tests.
+
+    The CLI constructs ``Session(engine)`` and enters it as a context manager;
+    ``scalars(...)`` always returns ``FakeScalarResult(scalar_rows)``.
+    """
+
+    class _CliFakeSession:
+        def __init__(self, engine):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def scalars(self, stmt):
+            return FakeScalarResult(scalar_rows)
+
+    return _CliFakeSession
+
+
+def test_cli_run_errors_for_unknown_user(monkeypatch):
+    from notion_sync import cli
+
+    monkeypatch.setattr(cli, "get_engine", lambda: object())
+    monkeypatch.setattr(cli, "Session", _make_cli_session([]))
+
+    from notion_sync.cli import app
+
+    result = CliRunner().invoke(
+        app, ["run", "--user", "nobody", "--days-back", "1", "--dry-run"]
+    )
+
+    assert result.exit_code != 0
+    assert "No Garmin user matches" in _strip_ansi(result.output)
+
+
+def test_cli_run_requires_token_for_non_dry_run(monkeypatch):
+    from notion_sync import cli
+
+    monkeypatch.setattr(cli, "get_engine", lambda: object())
+    monkeypatch.setattr(cli, "Session", _make_cli_session([_FakeDbUser()]))
+    monkeypatch.setattr(
+        cli, "notion_sync_config", lambda session, user_id: (None, {"activities": "db"})
+    )
+
+    from notion_sync.cli import app
+
+    result = CliRunner().invoke(
+        app, ["run", "--user", "somebody", "--days-back", "1"]
+    )
+
+    assert result.exit_code != 0
+    assert "token" in _strip_ansi(result.output)
+
+
+def test_cli_run_passes_resolved_targets_and_user_to_run_sync(monkeypatch):
+    from notion_sync import cli
+
+    FakeSession = _make_cli_session([_FakeDbUser()])
+    captured = {}
+
+    def fake_run_sync(session, sink, targets, **kwargs):
+        captured["session"] = session
+        captured["sink"] = sink
+        captured["targets"] = targets
+        captured["kwargs"] = kwargs
+        return {"activities": {"status": "ok"}}
+
+    monkeypatch.setattr(cli, "get_engine", lambda: object())
+    monkeypatch.setattr(cli, "Session", FakeSession)
+    monkeypatch.setattr(
+        cli, "notion_sync_config", lambda session, user_id: ("tok", {"activities": "db"})
+    )
+    monkeypatch.setattr(cli, "Client", lambda *, auth: object())
+    monkeypatch.setattr(cli, "run_sync", fake_run_sync)
+
+    from notion_sync.cli import app
+
+    result = CliRunner().invoke(
+        app, ["run", "--user", "somebody", "--days-back", "1"]
+    )
+
+    assert result.exit_code == 0
+    assert captured["targets"] == {"activities": "db"}
+    assert captured["kwargs"]["user_filter"] == "somebody"
+    assert captured["kwargs"]["data_types"] is None
+    assert captured["kwargs"]["start_date"] is not None
+    assert captured["kwargs"]["end_date"] is not None
+    assert isinstance(captured["session"], FakeSession)
+    assert isinstance(captured["sink"], NotionSink)
+    assert captured["sink"].dry_run is False
+    assert "activities" in _strip_ansi(result.output)
 
 
 # --------------------------------------------------------------------------- #
 # run_sync create / update / error paths
 # --------------------------------------------------------------------------- #
 
-def _settings_with_activities():
-    """Build a NotionSettings with activities configured (env file ignored for test isolation)."""
-    return NotionSettings(_env_file=None, token="tok", activities_database_id="activities-db")
+def _targets_with_activities():
+    """Build a targets mapping with activities configured."""
+    return {"activities": "activities-db"}
 
 
-def _settings_with_personal_records():
-    """Build a NotionSettings with personal records configured."""
-    return NotionSettings(_env_file=None, token="tok", personal_records_database_id="records-db")
+def _targets_with_personal_records():
+    """Build a targets mapping with personal records configured."""
+    return {"personal_records": "records-db"}
 
 
 def test_run_sync_creates_page_when_no_existing_page():
     session = FakeSession(rows=[[_make_activity()]])
     client = FakeNotionClient(results=[])
     sink = NotionSink(client, dry_run=False, min_interval=0.0, sleep=lambda _s: None)
-    settings = _settings_with_activities()
+    targets = _targets_with_activities()
 
-    result = run_sync(session, sink, settings, data_types=["activities"])
+    result = run_sync(session, sink, targets, data_types=["activities"])
 
     info = result["activities"]
     assert info["status"] == "success"
@@ -300,9 +400,9 @@ def test_run_sync_updates_page_when_existing_page_exists():
     session = FakeSession(rows=[[_make_activity()]])
     client = FakeNotionClient(results=[{"id": "page-1"}])
     sink = NotionSink(client, dry_run=False, min_interval=0.0, sleep=lambda _s: None)
-    settings = _settings_with_activities()
+    targets = _targets_with_activities()
 
-    result = run_sync(session, sink, settings, data_types=["activities"])
+    result = run_sync(session, sink, targets, data_types=["activities"])
 
     info = result["activities"]
     assert info["status"] == "success"
@@ -338,10 +438,10 @@ def test_run_sync_logs_error_and_marks_partial_when_a_row_fails(caplog):
 
     client = FakeNotionClient(query_side_effect=query_side_effect)
     sink = NotionSink(client, dry_run=False, min_interval=0.0, sleep=lambda _s: None)
-    settings = _settings_with_activities()
+    targets = _targets_with_activities()
 
     caplog.set_level(logging.DEBUG, logger="notion_sync.sync")
-    result = run_sync(session, sink, settings, data_types=["activities"])
+    result = run_sync(session, sink, targets, data_types=["activities"])
 
     info = result["activities"]
     assert info["status"] == "partial"
@@ -383,9 +483,9 @@ def test_run_sync_updates_same_personal_record_type_to_latest_value():
 
     client = FakeNotionClient(query_side_effect=query_side_effect)
     sink = NotionSink(client, dry_run=False, min_interval=0.0, sleep=lambda _s: None)
-    settings = _settings_with_personal_records()
+    targets = _targets_with_personal_records()
 
-    result = run_sync(session, sink, settings, data_types=["personal_records"])
+    result = run_sync(session, sink, targets, data_types=["personal_records"])
 
     info = result["personal_records"]
     assert info["status"] == "success"
