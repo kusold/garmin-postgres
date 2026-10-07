@@ -11,11 +11,16 @@ class NotionSink:
     """Writes rows to a Notion database with client-side rate limiting and retry.
 
     Notion limits integrations to roughly 3 requests/second and returns HTTP 429
-    (and occasionally 5xx) under load. The underlying ``notion-client`` library
-    only retries 5xx for idempotent methods (GET/DELETE), so ``pages.create``
-    and ``pages.update`` would otherwise propagate on the first transient error.
-    We add pacing + retry/backoff here to stay safely under the limit and to
-    absorb 429/5xx responses for all calls.
+    (and occasionally 5xx) under load. ``notion-client`` 3.x has its own retry
+    loop for those responses, but the CLI constructs the client with
+    ``retry=False`` so this class stays the single owner of pacing and retry
+    behavior (with injectable timing for tests).
+
+    Since Notion API version 2025-09-03 (notion-client 3.x), databases are
+    containers whose rows belong to data sources. Configured database IDs are
+    container IDs, so they are resolved to a data source ID via
+    ``databases.retrieve`` (cached per database) before querying or creating
+    pages.
     """
 
     def __init__(
@@ -38,6 +43,9 @@ class NotionSink:
         self._sleep = sleep
         self._monotonic = monotonic
         self._last_call_at: float | None = None
+        # database_id -> resolved data_source_id, so discovery happens once
+        # per configured database per run.
+        self._data_source_ids: dict[str, str] = {}
 
     def _invoke(self, fn: Callable[..., Any], /, **kwargs: Any) -> Any:
         """Call ``fn(**kwargs)`` with pacing and retry/backoff.
@@ -102,6 +110,27 @@ class NotionSink:
         assert last_error is not None
         raise last_error
 
+    def _resolve_data_source_id(self, database_id: str) -> str:
+        """Map a database (container) ID to the ID of its single data source."""
+        if database_id not in self._data_source_ids:
+            database = self._invoke(
+                self.client.databases.retrieve,
+                database_id=database_id,
+            )
+            data_sources = database["data_sources"]
+            if not data_sources:
+                raise ValueError(
+                    f"Notion database {database_id} has no data sources"
+                )
+            if len(data_sources) > 1:
+                raise ValueError(
+                    f"Notion database {database_id} has multiple data sources "
+                    f"({', '.join(ds['id'] for ds in data_sources)}); "
+                    "sync requires a database with a single data source"
+                )
+            self._data_source_ids[database_id] = data_sources[0]["id"]
+        return self._data_source_ids[database_id]
+
     def upsert_page(
         self,
         database_id: str,
@@ -111,9 +140,10 @@ class NotionSink:
         icon: dict | None = None,
         cover: dict | None = None,
     ) -> str:
+        data_source_id = self._resolve_data_source_id(database_id)
         existing = self._invoke(
-            self.client.databases.query,
-            database_id=database_id,
+            self.client.data_sources.query,
+            data_source_id=data_source_id,
             filter=filter_payload,
         )["results"]
 
@@ -133,7 +163,7 @@ class NotionSink:
             return "updated"
 
         create_payload: dict[str, Any] = {
-            "parent": {"database_id": database_id},
+            "parent": {"data_source_id": data_source_id},
             "properties": properties,
         }
         if icon:

@@ -73,7 +73,10 @@ def run(
         )
         raise typer.Exit(1)
 
-    client = Client(auth=token or "dry-run")
+    # retry=False: notion-client 3.x retries 429/5xx internally; NotionSink owns
+    # pacing and retry for all calls, so disable the client's loop to avoid
+    # stacking two retry layers.
+    client = Client(auth=token or "dry-run", retry=False)
     sink = NotionSink(client, dry_run=dry_run)
     with Session(engine) as session:
         results = run_sync(

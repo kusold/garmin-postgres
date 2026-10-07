@@ -27,8 +27,34 @@ def _strip_ansi(text: str) -> str:
     return _ANSI.sub("", text)
 
 
+def _data_source_id_for(database_id):
+    """Deterministic data source ID for a database ID, mirroring Notion's
+    2025-09-03 API where a database container holds distinct data sources."""
+    return f"ds-for-{database_id}"
+
+
 class FakeDatabases:
-    """Fake Notion ``databases`` endpoint.
+    """Fake Notion ``databases`` endpoint (notion-client 3.x shape).
+
+    ``retrieve`` returns a database container with a single data source whose
+    ID differs from the database ID, like real Notion databases. Pass
+    ``data_sources_info`` to override (e.g. empty or multiple data sources).
+    """
+
+    def __init__(self, data_sources_info=None):
+        self._data_sources_info = data_sources_info
+        self.retrieve_calls = []
+
+    def retrieve(self, database_id, **kwargs):
+        self.retrieve_calls.append(database_id)
+        data_sources = self._data_sources_info
+        if data_sources is None:
+            data_sources = [{"id": _data_source_id_for(database_id), "name": "Main"}]
+        return {"id": database_id, "data_sources": data_sources}
+
+
+class FakeDataSources:
+    """Fake Notion ``data_sources`` endpoint.
 
     By default returns a fixed result list. Pass ``query_side_effect`` (a callable
     invoked with the query kwargs) to control per-call behavior (e.g. raise on
@@ -60,8 +86,9 @@ class FakePages:
 
 
 class FakeNotionClient:
-    def __init__(self, results=None, *, query_side_effect=None):
-        self.databases = FakeDatabases(results, query_side_effect=query_side_effect)
+    def __init__(self, results=None, *, query_side_effect=None, data_sources_info=None):
+        self.databases = FakeDatabases(data_sources_info)
+        self.data_sources = FakeDataSources(results, query_side_effect=query_side_effect)
         self.pages = FakePages()
 
 
@@ -212,6 +239,7 @@ def test_notion_sink_creates_when_no_existing_page():
 
     assert action == "created"
     assert len(client.pages.created) == 1
+    assert client.pages.created[0]["parent"] == {"data_source_id": "ds-for-db"}
     assert client.pages.updated == []
 
 
@@ -233,11 +261,44 @@ def test_notion_sink_dry_run_queries_but_does_not_write():
     action = sink.upsert_page("db", filter_payload={"property": "Name"}, properties={"Name": {}})
 
     assert action == "dry_run"
-    assert client.databases.queries == [
-        {"database_id": "db", "filter": {"property": "Name"}},
+    assert client.databases.retrieve_calls == ["db"]
+    assert client.data_sources.queries == [
+        {"data_source_id": "ds-for-db", "filter": {"property": "Name"}},
     ]
     assert client.pages.created == []
     assert client.pages.updated == []
+
+
+def test_notion_sink_resolves_data_source_id_once_per_database():
+    client = FakeNotionClient(results=[])
+    sink = NotionSink(client, min_interval=0.0)
+
+    for _ in range(2):
+        sink.upsert_page("db", filter_payload={"property": "Name"}, properties={"Name": {}})
+
+    assert client.databases.retrieve_calls == ["db"]  # discovery cached
+    assert len(client.data_sources.queries) == 2
+    assert len(client.pages.created) == 2
+
+
+def test_notion_sink_rejects_database_with_multiple_data_sources():
+    client = FakeNotionClient(
+        data_sources_info=[{"id": "ds-1", "name": "Main"}, {"id": "ds-2", "name": "Other"}]
+    )
+    sink = NotionSink(client)
+
+    with pytest.raises(ValueError, match="multiple data sources"):
+        sink.upsert_page("db", filter_payload={"property": "Name"}, properties={"Name": {}})
+    assert client.pages.created == []
+
+
+def test_notion_sink_rejects_database_with_no_data_sources():
+    client = FakeNotionClient(data_sources_info=[])
+    sink = NotionSink(client)
+
+    with pytest.raises(ValueError, match="no data sources"):
+        sink.upsert_page("db", filter_payload={"property": "Name"}, properties={"Name": {}})
+    assert client.pages.created == []
 
 
 def test_run_sync_skips_unconfigured_databases():
@@ -342,7 +403,7 @@ def test_cli_run_passes_resolved_targets_and_user_to_run_sync(monkeypatch):
     monkeypatch.setattr(
         cli, "notion_sync_config", lambda session, user_id: ("tok", {"activities": "db"})
     )
-    monkeypatch.setattr(cli, "Client", lambda *, auth: object())
+    monkeypatch.setattr(cli, "Client", lambda *, auth, retry: object())
     monkeypatch.setattr(cli, "run_sync", fake_run_sync)
 
     from notion_sync.cli import app
@@ -393,7 +454,7 @@ def test_run_sync_creates_page_when_no_existing_page():
     assert info["errors"] == 0
     assert len(client.pages.created) == 1
     assert client.pages.updated == []
-    assert client.pages.created[0]["parent"] == {"database_id": "activities-db"}
+    assert client.pages.created[0]["parent"] == {"data_source_id": "ds-for-activities-db"}
 
 
 def test_run_sync_updates_page_when_existing_page_exists():
@@ -494,8 +555,9 @@ def test_run_sync_updates_same_personal_record_type_to_latest_value():
     assert info["updated"] == 1
     assert len(client.pages.created) == 1
     assert len(client.pages.updated) == 1
-    assert client.databases.queries[0]["filter"] == {"property": "typeId", "number": {"equals": 3}}
-    assert client.databases.queries[1]["filter"] == {"property": "typeId", "number": {"equals": 3}}
+    assert client.databases.retrieve_calls == ["records-db"]  # resolved once, cached
+    assert client.data_sources.queries[0]["filter"] == {"property": "typeId", "number": {"equals": 3}}
+    assert client.data_sources.queries[1]["filter"] == {"property": "typeId", "number": {"equals": 3}}
     updated_properties = client.pages.updated[0]["properties"]
     assert updated_properties["Date"]["date"]["start"] == "2026-06-01"
     assert updated_properties["Value"]["rich_text"][0]["text"]["content"] == "00:22:14"
@@ -592,7 +654,8 @@ def test_notion_sink_paces_calls_using_min_interval():
         clock["t"] += 0.04
         return clock["t"]
 
-    client = FakeNotionClient(results=[])  # empty -> create path (two calls)
+    client = FakeNotionClient(results=[])  # empty -> create path (three calls:
+    # data source discovery, query, create)
     sink = NotionSink(
         client,
         dry_run=False,
@@ -605,9 +668,10 @@ def test_notion_sink_paces_calls_using_min_interval():
     action = sink.upsert_page("db", filter_payload={"property": "X"}, properties={"X": {}})
 
     assert action == "created"
-    # First call: no pacing (no prior call). Second call: pace the remainder.
-    assert len(sleeps) == 1
+    # First call: no pacing (no prior call). Second and third: pace the remainder.
+    assert len(sleeps) == 2
     assert sleeps[0] == pytest.approx(0.06, abs=0.001)
+    assert sleeps[1] == pytest.approx(0.06, abs=0.001)
 
 
 # --------------------------------------------------------------------------- #
