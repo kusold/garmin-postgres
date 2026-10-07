@@ -8,7 +8,7 @@ dependencies = [
     "garmin-sync",
     "notion-sync",
     "prefect==3.8.0",
-    "typer>=0.15.0",
+    "typer>=0.15.0,<1",
 ]
 
 [project.scripts]
