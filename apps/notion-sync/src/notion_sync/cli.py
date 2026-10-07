@@ -1,15 +1,13 @@
 from datetime import date, timedelta
 
 import typer
-from notion_client import Client
 from sqlalchemy import select
 from sqlmodel import Session
 
 from garmin_postgres.config import get_settings as get_db_settings
 from garmin_postgres.db import get_engine
 from garmin_postgres.models.user import User
-from notion_sync.notion import NotionSink
-from notion_sync.sync import DATA_TYPES, run_sync
+from notion_sync.run import run_user_sync
 from notion_sync.targets import find_user, notion_sync_config
 
 app = typer.Typer(name="notion-sync", help="Sync archived Garmin data from PostgreSQL to Notion.")
@@ -46,15 +44,9 @@ def run(
     start_date: str = typer.Option(None, "--start-date", help="Explicit start date (YYYY-MM-DD)"),
     end_date: str = typer.Option(None, "--end-date", help="Explicit end date (YYYY-MM-DD)"),
     data_type: list[str] = typer.Option(None, "--data-type", "-t", help="Data types to sync (activities, daily_steps, personal_records)"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Query data but don't read or write Notion pages"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview archived rows without writing to Notion; reads Notion when a token is configured"),
 ) -> None:
     """Sync archived data to Notion for one user's configured databases."""
-    selected = data_type if data_type else None
-    invalid = sorted(set(selected or []) - set(DATA_TYPES))
-    if invalid:
-        typer.echo(f"Unsupported data type(s): {', '.join(invalid)}", err=True)
-        raise typer.Exit(1)
-
     parsed_start, parsed_end = _date_range(days_back, start_date, end_date)
 
     engine = get_engine()
@@ -63,31 +55,17 @@ def run(
         if db_user is None:
             typer.echo(f"No Garmin user matches --user {user!r}", err=True)
             raise typer.Exit(1)
-        token, targets = notion_sync_config(session, db_user.id)
-
-    if not token and not dry_run:
-        typer.echo(
-            f"sync_targets 'notion' config for user {user!r} has no token "
-            "(required unless --dry-run is used)",
-            err=True,
-        )
-        raise typer.Exit(1)
-
-    # retry=False: notion-client 3.x retries 429/5xx internally; NotionSink owns
-    # pacing and retry for all calls, so disable the client's loop to avoid
-    # stacking two retry layers.
-    client = Client(auth=token or "dry-run", retry=False)
-    sink = NotionSink(client, dry_run=dry_run)
-    with Session(engine) as session:
-        results = run_sync(
-            session,
-            sink,
-            targets,
-            data_types=selected,
+    try:
+        results = run_user_sync(
+            db_user.id,
+            data_types=data_type or None,
             start_date=parsed_start,
             end_date=parsed_end,
-            user_filter=user,
+            dry_run=dry_run,
         )
+    except ValueError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(1) from error
 
     for dtype, info in results.items():
         typer.echo(f"  {dtype}: {info}")

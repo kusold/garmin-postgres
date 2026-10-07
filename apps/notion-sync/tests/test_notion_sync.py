@@ -1,9 +1,8 @@
-import logging
 import re
 from datetime import date, datetime, timezone
 
 import pytest
-from notion_client.errors import APIResponseError, UnknownHTTPResponseError
+from notion_client.errors import APIResponseError
 from sqlalchemy import select
 from typer.testing import CliRunner
 
@@ -19,7 +18,6 @@ from notion_sync.notion import NotionSink
 from notion_sync.sync import (
     _apply_date_window,
     _apply_datetime_window,
-    run_sync,
 )
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -105,32 +103,6 @@ class FakeScalarResult:
 
     def first(self):
         return self.rows[0] if self.rows else None
-
-
-class FakeSession:
-    """Fake SQLAlchemy session. ``rows`` is a list of row-lists popped in order."""
-
-    def __init__(self, rows):
-        self.rows = rows
-
-    def scalars(self, stmt):
-        return FakeScalarResult(self.rows.pop(0))
-
-
-def _make_activity():
-    return Activity(
-        id=42,
-        user_id=1,
-        activity_id=123,
-        activity_type="running",
-        start_time=datetime(2026, 6, 1, 12, 30, tzinfo=timezone.utc),
-        raw_json={
-            "activityName": "Morning Run",
-            "activityType": {"typekey": "running"},
-            "distance": 5000,
-            "duration": 1800,
-        },
-    )
 
 
 def test_activity_page_maps_postgres_activity_to_notion_properties():
@@ -442,18 +414,6 @@ def test_notion_sink_rejects_database_with_no_data_sources():
     assert client.pages.created == []
 
 
-def test_run_sync_skips_unconfigured_databases():
-    session = FakeSession(rows=[])
-    sink = NotionSink(FakeNotionClient(), dry_run=True)
-
-    result = run_sync(session, sink, {})
-
-    assert result["activities"]["status"] == "skipped"
-    assert result["daily_steps"]["status"] == "skipped"
-    assert result["personal_records"]["status"] == "skipped"
-    assert "sync_targets" in result["activities"]["error"]
-
-
 def test_notion_sync_run_requires_user():
     from notion_sync.cli import app
 
@@ -507,45 +467,19 @@ def test_cli_run_errors_for_unknown_user(monkeypatch):
     assert "No Garmin user matches" in _strip_ansi(result.output)
 
 
-def test_cli_run_requires_token_for_non_dry_run(monkeypatch):
+def test_cli_run_resolves_user_and_calls_shared_run(monkeypatch):
     from notion_sync import cli
 
-    monkeypatch.setattr(cli, "get_engine", lambda: object())
-    monkeypatch.setattr(cli, "Session", _make_cli_session([_FakeDbUser()]))
-    monkeypatch.setattr(
-        cli, "notion_sync_config", lambda session, user_id: (None, {"activities": "db"})
-    )
-
-    from notion_sync.cli import app
-
-    result = CliRunner().invoke(
-        app, ["run", "--user", "somebody", "--days-back", "1"]
-    )
-
-    assert result.exit_code != 0
-    assert "token" in _strip_ansi(result.output)
-
-
-def test_cli_run_passes_resolved_targets_and_user_to_run_sync(monkeypatch):
-    from notion_sync import cli
-
-    FakeSession = _make_cli_session([_FakeDbUser()])
     captured = {}
 
-    def fake_run_sync(session, sink, targets, **kwargs):
-        captured["session"] = session
-        captured["sink"] = sink
-        captured["targets"] = targets
-        captured["kwargs"] = kwargs
+    def fake_run_user_sync(user_id, **kwargs):
+        captured["user_id"] = user_id
+        captured.update(kwargs)
         return {"activities": {"status": "ok"}}
 
     monkeypatch.setattr(cli, "get_engine", lambda: object())
-    monkeypatch.setattr(cli, "Session", FakeSession)
-    monkeypatch.setattr(
-        cli, "notion_sync_config", lambda session, user_id: ("tok", {"activities": "db"})
-    )
-    monkeypatch.setattr(cli, "Client", lambda *, auth, retry: object())
-    monkeypatch.setattr(cli, "run_sync", fake_run_sync)
+    monkeypatch.setattr(cli, "Session", _make_cli_session([_FakeDbUser()]))
+    monkeypatch.setattr(cli, "run_user_sync", fake_run_user_sync)
 
     from notion_sync.cli import app
 
@@ -554,254 +488,43 @@ def test_cli_run_passes_resolved_targets_and_user_to_run_sync(monkeypatch):
     )
 
     assert result.exit_code == 0
-    assert captured["targets"] == {"activities": "db"}
-    assert captured["kwargs"]["user_filter"] == "somebody"
-    assert captured["kwargs"]["data_types"] is None
-    assert captured["kwargs"]["start_date"] is not None
-    assert captured["kwargs"]["end_date"] is not None
-    assert isinstance(captured["session"], FakeSession)
-    assert isinstance(captured["sink"], NotionSink)
-    assert captured["sink"].dry_run is False
+    assert captured["user_id"] == 7
+    assert captured["data_types"] is None
+    assert captured["start_date"] is not None
+    assert captured["end_date"] is not None
+    assert captured["dry_run"] is False
     assert "activities" in _strip_ansi(result.output)
 
 
-# --------------------------------------------------------------------------- #
-# run_sync create / update / error paths
-# --------------------------------------------------------------------------- #
+def test_cli_run_reports_inactive_user(monkeypatch):
+    from notion_sync import cli
 
-def _targets_with_activities():
-    """Build a targets mapping with activities configured."""
-    return {"activities": "activities-db"}
+    def inactive_run(_user_id, **_kwargs):
+        raise ValueError("Garmin user id=7 is inactive")
 
+    monkeypatch.setattr(cli, "get_engine", lambda: object())
+    monkeypatch.setattr(cli, "Session", _make_cli_session([_FakeDbUser()]))
+    monkeypatch.setattr(cli, "run_user_sync", inactive_run)
 
-def _targets_with_personal_records():
-    """Build a targets mapping with personal records configured."""
-    return {"personal_records": "records-db"}
+    result = CliRunner().invoke(cli.app, ["run", "--user", "somebody"])
 
-
-def test_run_sync_collapses_daily_streak_rows_to_best_value():
-    """Type 16 (daily streak) arrives as one row per day; only the best value
-    is a personal record — the latest day must not overwrite it."""
-    best_streak = PersonalRecord(
-        user_id=1,
-        type_id=16,
-        record_date=date(2026, 9, 1),
-        value_text="11",
-        raw_json={"typeId": 16, "value": 11},
-    )
-    later_lower_streak = PersonalRecord(
-        user_id=1,
-        type_id=16,
-        record_date=date(2026, 9, 2),
-        value_text="3",
-        raw_json={"typeId": 16, "value": 3},
-    )
-    five_k = PersonalRecord(
-        user_id=1,
-        type_id=3,
-        record_date=date(2026, 6, 4),
-        value_text="1914.4",
-        raw_json={"typeId": 3, "value": 1914.4},
-    )
-    session = FakeSession(rows=[[best_streak, later_lower_streak, five_k]])
-    client = FakeNotionClient(results=[])
-    sink = NotionSink(client, dry_run=False, min_interval=0.0, sleep=lambda _s: None)
-    targets = _targets_with_personal_records()
-
-    result = run_sync(session, sink, targets, data_types=["personal_records"])
-
-    info = result["personal_records"]
-    assert info["status"] == "success"
-    assert info["rows"] == 2  # collapsed: best streak + 5K
-    assert info["created"] == 2
-    created_values = {
-        p["properties"]["Record"]["title"][0]["text"]["content"]:
-        p["properties"]["Date"]["date"]["start"]
-        for p in client.pages.created
-    }
-    assert created_values == {"Daily Streak": "2026-09-01", "5K": "2026-06-04"}
-
-
-def test_run_sync_creates_page_when_no_existing_page():
-    session = FakeSession(rows=[[_make_activity()]])
-    client = FakeNotionClient(results=[])
-    sink = NotionSink(client, dry_run=False, min_interval=0.0, sleep=lambda _s: None)
-    targets = _targets_with_activities()
-
-    result = run_sync(session, sink, targets, data_types=["activities"])
-
-    info = result["activities"]
-    assert info["status"] == "success"
-    assert info["rows"] == 1
-    assert info["created"] == 1
-    assert info["updated"] == 0
-    assert info["errors"] == 0
-    assert len(client.pages.created) == 1
-    assert client.pages.updated == []
-    assert client.pages.created[0]["parent"] == {"data_source_id": "ds-for-activities-db"}
-
-
-def test_run_sync_updates_page_when_existing_page_exists():
-    session = FakeSession(rows=[[_make_activity()]])
-    client = FakeNotionClient(results=[{"id": "page-1"}])
-    sink = NotionSink(client, dry_run=False, min_interval=0.0, sleep=lambda _s: None)
-    targets = _targets_with_activities()
-
-    result = run_sync(session, sink, targets, data_types=["activities"])
-
-    info = result["activities"]
-    assert info["status"] == "success"
-    assert info["rows"] == 1
-    assert info["updated"] == 1
-    assert info["created"] == 0
-    assert info["errors"] == 0
-    assert client.pages.created == []
-    assert client.pages.updated[0]["page_id"] == "page-1"
-
-
-def test_run_sync_logs_error_and_marks_partial_when_a_row_fails(caplog):
-    # Two activities; the client's query raises on the first row then succeeds
-    # on the second, so we get one error + one success -> status "partial".
-    activity_a = _make_activity()
-    activity_b = Activity(
-        id=43,
-        user_id=1,
-        activity_id=124,
-        activity_type="running",
-        start_time=datetime(2026, 6, 2, 12, 30, tzinfo=timezone.utc),
-        raw_json={"activityName": "Evening Run", "activityType": {"typekey": "running"}},
-    )
-    session = FakeSession(rows=[[activity_a, activity_b]])
-
-    call = {"n": 0}
-
-    def query_side_effect(**kwargs):
-        call["n"] += 1
-        if call["n"] == 1:
-            raise RuntimeError("boom from query")
-        return {"results": []}
-
-    client = FakeNotionClient(query_side_effect=query_side_effect)
-    sink = NotionSink(client, dry_run=False, min_interval=0.0, sleep=lambda _s: None)
-    targets = _targets_with_activities()
-
-    caplog.set_level(logging.DEBUG, logger="notion_sync.sync")
-    result = run_sync(session, sink, targets, data_types=["activities"])
-
-    info = result["activities"]
-    assert info["status"] == "partial"
-    assert info["rows"] == 2
-    assert info["errors"] == 1
-    assert info["created"] == 1
-
-    failure_records = [r for r in caplog.records if r.levelno == logging.ERROR]
-    assert failure_records, "expected an ERROR log from logger.exception"
-    msg = failure_records[0].getMessage()
-    assert "Activity" in msg
-    assert "id=42" in msg  # the failing row's id
-
-
-def test_run_sync_updates_same_personal_record_type_to_latest_value():
-    first_record = PersonalRecord(
-        id=1,
-        user_id=1,
-        type_id=3,
-        record_date=date(2026, 5, 1),
-        activity_type="running",
-        value_text="00:23:00",
-        raw_json={"typeId": 3, "value": "00:23:00"},
-    )
-    latest_record = PersonalRecord(
-        id=2,
-        user_id=1,
-        type_id=3,
-        record_date=date(2026, 6, 1),
-        activity_type="running",
-        value_text="00:22:14",
-        raw_json={"typeId": 3, "value": "00:22:14"},
-    )
-    session = FakeSession(rows=[[first_record, latest_record]])
-    query_results = [[], [{"id": "page-1"}]]
-
-    def query_side_effect(**kwargs):
-        return {"results": query_results.pop(0)}
-
-    client = FakeNotionClient(query_side_effect=query_side_effect)
-    sink = NotionSink(client, dry_run=False, min_interval=0.0, sleep=lambda _s: None)
-    targets = _targets_with_personal_records()
-
-    result = run_sync(session, sink, targets, data_types=["personal_records"])
-
-    info = result["personal_records"]
-    assert info["status"] == "success"
-    assert info["rows"] == 2
-    assert info["created"] == 1
-    assert info["updated"] == 1
-    assert len(client.pages.created) == 1
-    assert len(client.pages.updated) == 1
-    assert client.databases.retrieve_calls == ["records-db"]  # resolved once, cached
-    assert client.data_sources.queries[0]["filter"] == {"property": "typeId", "number": {"equals": 3}}
-    assert client.data_sources.queries[1]["filter"] == {"property": "typeId", "number": {"equals": 3}}
-    updated_properties = client.pages.updated[0]["properties"]
-    assert updated_properties["Date"]["date"]["start"] == "2026-06-01"
-    assert updated_properties["Value"]["rich_text"][0]["text"]["content"] == "00:22:14"
+    assert result.exit_code != 0
+    assert "inactive" in _strip_ansi(result.output)
 
 
 # --------------------------------------------------------------------------- #
-# NotionSink retry / backoff / pacing
+# NotionSink pacing; the Notion client owns retries
 # --------------------------------------------------------------------------- #
-
-class _FakeNotion429(APIResponseError):
-    """A retryable 429 error with an injectable Retry-After header.
-
-    APIResponseError.__init__ (via HTTPResponseError) requires several args, so
-    we bypass it and just set the attributes the sink reads via getattr:
-    ``status`` and ``headers``. Inheritance ensures it's still caught by the
-    sink's ``except (APIResponseError, UnknownHTTPResponseError)``.
-    """
-
-    def __init__(self, headers=None):
-        self.status = 429
-        self.headers = headers or {}
-
 
 class _FakeNotion404(APIResponseError):
-    """A non-retryable 404 error, constructed the same way as the 429 fake."""
+    """An API error from the client, forwarded by the sink."""
 
     def __init__(self, headers=None):
         self.status = 404
         self.headers = headers or {}
 
 
-def test_notion_sink_retries_on_429_then_succeeds():
-    sleeps = []
-    query = {"n": 0}
-
-    def query_side_effect(**kwargs):
-        query["n"] += 1
-        if query["n"] == 1:
-            raise _FakeNotion429(headers={"Retry-After": "1.5"})
-        return {"results": []}
-
-    client = FakeNotionClient(query_side_effect=query_side_effect)
-    sink = NotionSink(
-        client,
-        dry_run=False,
-        min_interval=0.0,
-        max_retries=3,
-        sleep=sleeps.append,
-        monotonic=lambda: 0.0,
-    )
-
-    action = sink.upsert_page("db", filter_payload={"property": "X"}, properties={"X": {}})
-
-    assert action == "created"
-    assert query["n"] == 2  # one failure, one success
-    assert sleeps == [1.5]  # honored the Retry-After header before retrying
-    assert len(client.pages.created) == 1
-
-
-def test_notion_sink_does_not_retry_non_retryable_4xx():
+def test_notion_sink_forwards_client_errors_without_its_own_retry():
     sleeps = []
     query = {"n": 0}
 
@@ -814,7 +537,6 @@ def test_notion_sink_does_not_retry_non_retryable_4xx():
         client,
         dry_run=False,
         min_interval=0.0,
-        max_retries=3,
         sleep=sleeps.append,
         monotonic=lambda: 0.0,
     )
@@ -822,8 +544,8 @@ def test_notion_sink_does_not_retry_non_retryable_4xx():
     with pytest.raises(APIResponseError):
         sink.upsert_page("db", filter_payload={"property": "X"}, properties={"X": {}})
 
-    assert query["n"] == 1  # no retries
-    assert sleeps == []  # no backoff sleep
+    assert query["n"] == 1
+    assert sleeps == []
     assert client.pages.created == []
 
 
@@ -844,7 +566,6 @@ def test_notion_sink_paces_calls_using_min_interval():
         client,
         dry_run=False,
         min_interval=0.1,
-        max_retries=0,
         sleep=sleeps.append,
         monotonic=monotonic,
     )

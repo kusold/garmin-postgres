@@ -4,7 +4,6 @@ import logging
 from datetime import date
 from typing import Any
 
-from notion_client import Client
 from prefect import get_run_logger, task
 from prefect.exceptions import MissingContextError
 from sqlalchemy import select
@@ -12,13 +11,10 @@ from sqlmodel import Session
 
 from garmin_postgres.db import get_engine
 from garmin_postgres.models.sync_target import SyncTarget
-from notion_sync.notion import NotionSink
-from notion_sync.sync import run_sync
-from notion_sync.targets import find_user, notion_sync_config
+from notion_sync.run import run_user_sync
 
 
 NOTION_SYNC_TIMEOUT_SECONDS = 60 * 60
-PERSONAL_RECORDS = "personal_records"
 logger = logging.getLogger(__name__)
 
 
@@ -44,85 +40,33 @@ def resolve_notion_configured_users_task(
 
 @task(
     name="sync-notion-user",
-    task_run_name="notion-sync-{user}",
+    task_run_name="notion-sync-{user_id}",
     timeout_seconds=NOTION_SYNC_TIMEOUT_SECONDS,
 )
 def sync_notion_user_task(
     *,
-    user: str,
+    user_id: int,
     data_types: list[str],
     start_date: date,
     end_date: date,
     dry_run: bool = False,
 ) -> dict[str, dict[str, Any]]:
-    """Sync one Garmin user's archived rows to configured Notion databases.
-
-    Activities and daily steps use the incremental date window. Personal
-    records are a current snapshot in the reference integration, so every
-    stored record is replayed in chronological order and the latest value wins.
-    """
+    """Run one user's Notion sync within a Prefect task."""
     run_logger = _get_logger()
-    engine = get_engine()
-    with Session(engine) as session:
-        db_user = find_user(session, user)
-        if db_user is None:
-            raise ValueError(f"No Garmin user matches user={user!r}")
-        token, targets = notion_sync_config(session, db_user.id)
-
-    if not token and not dry_run:
-        raise ValueError(
-            f"sync_targets 'notion' config for user={user!r} has no token "
-            "(required unless dry_run is enabled)"
-        )
-    if not targets:
-        raise ValueError(
-            f"sync_targets 'notion' config for user={user!r} has no databases "
-            "(expected keys: activities, daily_steps, personal_records)"
-        )
-
     run_logger.info(
-        "Starting Notion sync: user=%s window=%s..%s data_types=%s dry_run=%s",
-        user,
+        "Starting Notion sync: user_id=%s window=%s..%s data_types=%s dry_run=%s",
+        user_id,
         start_date,
         end_date,
         data_types,
         dry_run,
     )
-    client = Client(auth=token or "dry-run")
-    sink = NotionSink(client, dry_run=dry_run)
-    dated_data_types = [
-        data_type for data_type in data_types if data_type != PERSONAL_RECORDS
-    ]
-
-    with Session(engine) as session:
-        results: dict[str, dict[str, Any]] = {}
-        if dated_data_types:
-            results.update(
-                run_sync(
-                    session,
-                    sink,
-                    targets,
-                    data_types=dated_data_types,
-                    start_date=start_date,
-                    end_date=end_date,
-                    user_filter=user,
-                )
-            )
-        if PERSONAL_RECORDS in data_types:
-            results.update(
-                run_sync(
-                    session,
-                    sink,
-                    targets,
-                    data_types=[PERSONAL_RECORDS],
-                    user_filter=user,
-                )
-            )
-
-    ordered_results = {
-        data_type: results[data_type]
-        for data_type in data_types
-        if data_type in results
-    }
-    run_logger.info("Notion sync finished: user=%s results=%s", user, ordered_results)
-    return ordered_results
+    results = run_user_sync(
+        user_id,
+        data_types=data_types,
+        start_date=start_date,
+        end_date=end_date,
+        dry_run=dry_run,
+    )
+    run_logger.info("Notion sync finished: user_id=%s results=%s", user_id, results)
+    return results

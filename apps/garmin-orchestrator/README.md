@@ -14,8 +14,10 @@ child runs its selected object branches sequentially.
 The separate `notion-sync` deployment reads the archived PostgreSQL rows only;
 it never calls Garmin. It runs daily at 07:00 `America/Denver`, one hour after
 the morning incremental archive. Its two-day window applies to activities and
-daily steps, while personal records are fully replayed so the latest record for
-each Garmin `typeId` is reflected in Notion.
+daily steps. Personal records use the full archived snapshot, including the
+best daily streak. The CLI and Prefect task call the same per-user Notion sync
+run, which accepts active users only. Dry runs can read Notion when a token is
+configured, but never create or update pages.
 
 ```mermaid
 flowchart TB

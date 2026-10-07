@@ -31,7 +31,11 @@ def notion_sync_config(session: Session, user_id: int) -> tuple[str | None, dict
     Database keys that are not syncable data types yet (e.g. 'sleep') are
     dropped with a warning so dormant configuration is harmless.
     """
-    config = sync_target(session, user_id) or {}
+    return _notion_config(sync_target(session, user_id) or {})
+
+
+def _notion_config(config: dict) -> tuple[str | None, dict[str, str]]:
+    """Read syncable Notion destinations from one stored target config."""
     databases = {}
     databases_config = config.get("databases")
     if not isinstance(databases_config, dict):

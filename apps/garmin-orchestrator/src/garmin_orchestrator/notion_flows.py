@@ -8,7 +8,7 @@ from prefect import flow, get_run_logger
 from prefect.artifacts import create_markdown_artifact
 from prefect.exceptions import MissingContextError
 
-from notion_sync.sync import DATA_TYPES
+from notion_sync.run import normalize_notion_data_types
 
 from garmin_orchestrator.notion_tasks import (
     resolve_notion_configured_users_task,
@@ -32,17 +32,6 @@ def _get_logger():
         return get_run_logger()
     except MissingContextError:
         return logger
-
-
-def normalize_notion_data_types(data_types: list[str] | None) -> list[str]:
-    selected = list(dict.fromkeys(data_types or DATA_TYPES))
-    invalid = sorted(set(selected) - set(DATA_TYPES))
-    if invalid:
-        raise ValueError(
-            "Unsupported Notion data type(s): "
-            f"{', '.join(invalid)}. Expected one of: {', '.join(DATA_TYPES)}"
-        )
-    return selected
 
 
 def _failure_counts(results: list[dict[str, Any]]) -> tuple[int, int]:
@@ -156,7 +145,7 @@ def notion_sync_flow(
     results = []
     for sync_user in users:
         notion_results = sync_notion_user_task(
-            user=sync_user["display_name"],
+            user_id=sync_user["id"],
             data_types=selected_data_types,
             start_date=window["start_date"],
             end_date=window["end_date"],

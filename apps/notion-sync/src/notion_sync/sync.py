@@ -2,6 +2,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
+from typing import Protocol
 
 from sqlalchemy import select
 from sqlmodel import Session
@@ -9,15 +10,24 @@ from sqlmodel import Session
 from garmin_postgres.models.activity import Activity
 from garmin_postgres.models.daily_summary import DailySummary
 from garmin_postgres.models.personal_record import PersonalRecord
-from garmin_postgres.models.user import User
 from notion_sync.formatters import DAILY_STREAK_TYPE_ID
 from notion_sync.mappers import activity_page, daily_steps_page, personal_record_page
-from notion_sync.notion import NotionSink
 
 logger = logging.getLogger(__name__)
 
 
 DATA_TYPES = ["activities", "daily_steps", "personal_records"]
+
+
+class _PageSink(Protocol):
+    def upsert_page(
+        self,
+        database_id: str,
+        *,
+        filter_payload: dict,
+        properties: dict,
+        icon: dict | None = None,
+    ) -> str: ...
 
 
 @dataclass
@@ -50,9 +60,9 @@ def _status(rows: int, errors: int) -> str:
     return "partial" if rows > 0 else "error"
 
 
-def _users_clause(stmt, user_filter: str | None):
-    if user_filter:
-        return stmt.join(User).where(User.garmin_display_name == user_filter)
+def _user_clause(stmt, model, user_id: int | None):
+    if user_id is not None:
+        return stmt.where(model.user_id == user_id)
     return stmt
 
 
@@ -112,7 +122,7 @@ def _best_streak_per_user(rows: list[PersonalRecord]) -> list[PersonalRecord]:
 
 def _sync_table(
     session: Session,
-    sink: NotionSink,
+    sink: _PageSink,
     database_id: str | None,
     *,
     label: str,
@@ -122,7 +132,7 @@ def _sync_table(
     mapper: Callable[..., tuple[dict, dict, dict | None]],
     start_date: date | None = None,
     end_date: date | None = None,
-    user_filter: str | None = None,
+    user_id: int | None = None,
     row_filter: Callable[[list], list] | None = None,
 ) -> SyncResult:
     if not database_id:
@@ -133,7 +143,7 @@ def _sync_table(
         )
 
     stmt = select(model).order_by(order_column)
-    stmt = _users_clause(stmt, user_filter)
+    stmt = _user_clause(stmt, model, user_id)
     stmt = date_window(stmt, order_column, start_date, end_date)
 
     records = list(session.scalars(stmt).all())
@@ -173,12 +183,12 @@ def _sync_table(
 
 def sync_activities(
     session: Session,
-    sink: NotionSink,
+    sink: _PageSink,
     database_id: str | None,
     *,
     start_date: date | None = None,
     end_date: date | None = None,
-    user_filter: str | None = None,
+    user_id: int | None = None,
 ) -> SyncResult:
     return _sync_table(
         session,
@@ -191,18 +201,18 @@ def sync_activities(
         mapper=activity_page,
         start_date=start_date,
         end_date=end_date,
-        user_filter=user_filter,
+        user_id=user_id,
     )
 
 
 def sync_daily_steps(
     session: Session,
-    sink: NotionSink,
+    sink: _PageSink,
     database_id: str | None,
     *,
     start_date: date | None = None,
     end_date: date | None = None,
-    user_filter: str | None = None,
+    user_id: int | None = None,
 ) -> SyncResult:
     return _sync_table(
         session,
@@ -215,18 +225,16 @@ def sync_daily_steps(
         mapper=daily_steps_page,
         start_date=start_date,
         end_date=end_date,
-        user_filter=user_filter,
+        user_id=user_id,
     )
 
 
 def sync_personal_records(
     session: Session,
-    sink: NotionSink,
+    sink: _PageSink,
     database_id: str | None,
     *,
-    start_date: date | None = None,
-    end_date: date | None = None,
-    user_filter: str | None = None,
+    user_id: int | None = None,
 ) -> SyncResult:
     return _sync_table(
         session,
@@ -237,50 +245,39 @@ def sync_personal_records(
         order_column=PersonalRecord.record_date,
         date_window=_apply_date_window,
         mapper=personal_record_page,
-        start_date=start_date,
-        end_date=end_date,
-        user_filter=user_filter,
+        user_id=user_id,
         row_filter=_best_streak_per_user,
     )
 
 
 def run_sync(
     session: Session,
-    sink: NotionSink,
+    sink: _PageSink,
     targets: dict[str, str],
     *,
     data_types: list[str] | None = None,
     start_date: date | None = None,
     end_date: date | None = None,
-    user_filter: str | None = None,
+    user_id: int | None = None,
 ) -> dict[str, dict]:
     selected = data_types or DATA_TYPES
-    results = {}
-    if "activities" in selected:
-        results["activities"] = sync_activities(
-            session,
-            sink,
-            targets.get("activities"),
-            start_date=start_date,
-            end_date=end_date,
-            user_filter=user_filter,
-        ).as_dict()
-    if "daily_steps" in selected:
-        results["daily_steps"] = sync_daily_steps(
-            session,
-            sink,
-            targets.get("daily_steps"),
-            start_date=start_date,
-            end_date=end_date,
-            user_filter=user_filter,
-        ).as_dict()
-    if "personal_records" in selected:
-        results["personal_records"] = sync_personal_records(
-            session,
-            sink,
-            targets.get("personal_records"),
-            start_date=start_date,
-            end_date=end_date,
-            user_filter=user_filter,
-        ).as_dict()
+    results: dict[str, dict] = {}
+    for data_type in selected:
+        database_id = targets.get(data_type)
+        if data_type == "activities":
+            result = sync_activities(
+                session, sink, database_id,
+                start_date=start_date, end_date=end_date, user_id=user_id,
+            )
+        elif data_type == "daily_steps":
+            result = sync_daily_steps(
+                session, sink, database_id,
+                start_date=start_date, end_date=end_date, user_id=user_id,
+            )
+        elif data_type == "personal_records":
+            # Personal records describe a full snapshot, even in a dated run.
+            result = sync_personal_records(session, sink, database_id, user_id=user_id)
+        else:
+            raise ValueError(f"Unsupported Notion data type: {data_type}")
+        results[data_type] = result.as_dict()
     return results
