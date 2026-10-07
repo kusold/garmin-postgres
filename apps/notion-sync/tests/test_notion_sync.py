@@ -10,6 +10,10 @@ from typer.testing import CliRunner
 from garmin_postgres.models.activity import Activity
 from garmin_postgres.models.daily_summary import DailySummary
 from garmin_postgres.models.personal_record import PersonalRecord
+from notion_sync.formatters import (
+    PERSONAL_RECORD_NAMES,
+    format_record_pace,
+)
 from notion_sync.mappers import activity_page, daily_steps_page, personal_record_page
 from notion_sync.notion import NotionSink
 from notion_sync.sync import (
@@ -156,6 +160,93 @@ def test_activity_page_maps_postgres_activity_to_notion_properties():
     assert icon is not None
 
 
+def test_activity_page_maps_training_effect_from_detail_payload_shape():
+    """Detail payloads (/activity-service/activity/{id}) put the aerobic
+    training effect number in summaryDTO.trainingEffect and never include
+    aerobicTrainingEffect."""
+    activity = Activity(
+        user_id=2,
+        activity_id=24633752656,
+        activity_type="walking",
+        start_time=datetime(2026, 10, 6, 23, 23, 1, tzinfo=timezone.utc),
+        raw_json={
+            "activityId": 24633752656,
+            "activityName": "Evening Walk",
+            "activityTypeDTO": {"typeId": 3, "typeKey": "walking"},
+            "summaryDTO": {
+                "distance": 2559.2,
+                "duration": 2548.901,
+                "trainingEffect": 2.8,
+                "anaerobicTrainingEffect": 3.5,
+                "trainingEffectLabel": "IMPROVING",
+                "aerobicTrainingEffectMessage": "IMPROVING_2",
+                "anaerobicTrainingEffectMessage": "IMPROVING_1",
+            },
+        },
+    )
+
+    properties, _, _ = activity_page(activity)
+
+    assert properties["Aerobic"]["number"] == 2.8
+    assert properties["Anaerobic"]["number"] == 3.5
+    assert properties["Training Effect"]["select"]["name"] == "Improving"
+    assert properties["Aerobic Effect"]["select"]["name"] == "Impacting"
+    assert properties["Anaerobic Effect"]["select"]["name"] == "Impacting"
+
+
+def test_activity_page_maps_training_effect_from_list_payload_shape():
+    """List payloads (fallback when the detail fetch fails) expose the aerobic
+    training effect as top-level aerobicTrainingEffect."""
+    activity = Activity(
+        user_id=2,
+        activity_id=24633752656,
+        activity_type="walking",
+        start_time=datetime(2026, 10, 6, 23, 23, 1, tzinfo=timezone.utc),
+        raw_json={
+            "activityId": 24633752656,
+            "activityName": "Evening Walk",
+            "activityType": {"typeKey": "walking"},
+            "aerobicTrainingEffect": 2.8,
+            "anaerobicTrainingEffect": 3.5,
+            "trainingEffectLabel": "IMPROVING",
+            "aerobicTrainingEffectMessage": "IMPROVING_2",
+            "anaerobicTrainingEffectMessage": "IMPROVING_1",
+        },
+    )
+
+    properties, _, _ = activity_page(activity)
+
+    assert properties["Aerobic"]["number"] == 2.8
+    assert properties["Anaerobic"]["number"] == 3.5
+    assert properties["Training Effect"]["select"]["name"] == "Improving"
+
+
+def test_activity_page_maps_power_from_detail_payload_shape():
+    """Detail payloads name average power averagePower (avgPower never appears)."""
+    activity = Activity(
+        user_id=2,
+        activity_id=24607647919,
+        activity_type="virtual_ride",
+        start_time=datetime(2026, 10, 4, 20, 9, 21, tzinfo=timezone.utc),
+        raw_json={
+            "activityId": 24607647919,
+            "activityName": "Zwift Ride",
+            "activityTypeDTO": {"typeKey": "virtual_ride"},
+            "summaryDTO": {
+                "distance": 26500.0,
+                "duration": 3900.0,
+                "averagePower": 103.0,
+                "maxPower": 316.0,
+            },
+        },
+    )
+
+    properties, _, _ = activity_page(activity)
+
+    assert properties["Avg Power"]["number"] == 103.0
+    assert properties["Max Power"]["number"] == 316.0
+
+
 def test_activity_page_maps_summary_dto_payload_shape():
     activity = Activity(
         user_id=1,
@@ -193,6 +284,56 @@ def test_activity_page_maps_summary_dto_payload_shape():
     assert properties["PR"]["checkbox"] is False
     assert properties["Date"]["date"]["start"] == "2026-06-20T14:26:41+00:00"
     assert icon is not None
+
+
+def test_personal_record_names_cover_all_garmin_type_ids():
+    """5/6/11/16 are real Garmin PR types observed in archived data; without
+    names they sync to Notion as 'Unnamed Activity'."""
+    assert PERSONAL_RECORD_NAMES[5] == "Half Marathon"
+    assert PERSONAL_RECORD_NAMES[6] == "Marathon"
+    assert PERSONAL_RECORD_NAMES[11] == "Fastest 40 km"
+    assert PERSONAL_RECORD_NAMES[16] == "Daily Streak"
+
+
+def test_personal_record_page_computes_pace_for_running_duration_records():
+    """PR payloads carry no pace key; pace must be derived from the duration
+    value and the known race distance of the type."""
+    record = PersonalRecord(
+        user_id=1,
+        type_id=3,
+        record_date=date(2026, 6, 4),
+        activity_type="running",
+        value_text="1914.4",  # fastest 5K: 31:54
+        raw_json={"typeId": 3, "value": 1914.4},
+    )
+
+    properties, _, _ = personal_record_page(record)
+
+    assert properties["Record"]["title"][0]["text"]["content"] == "5K"
+    assert properties["Pace"]["rich_text"][0]["text"]["content"] == "6:22 min/km"
+
+
+def test_personal_record_page_pace_blank_for_non_duration_records():
+    record = PersonalRecord(
+        user_id=1,
+        type_id=7,
+        record_date=date(2026, 7, 6),
+        activity_type="running",
+        value_text="46054.1",  # longest run: a distance, not a duration
+        raw_json={"typeId": 7, "value": 46054.1},
+    )
+
+    properties, _, _ = personal_record_page(record)
+
+    assert properties["Pace"]["rich_text"][0]["text"]["content"] == ""
+
+
+def test_format_record_pace_handles_missing_and_garbage_values():
+    assert format_record_pace(3, None) == ""
+    assert format_record_pace(3, "") == ""
+    assert format_record_pace(3, "not-a-number") == ""
+    assert format_record_pace(99, "1800.0") == ""  # unknown type
+    assert format_record_pace(3, "0") == ""
 
 
 def test_daily_steps_page_maps_daily_summary_raw_json():
@@ -436,6 +577,49 @@ def _targets_with_activities():
 def _targets_with_personal_records():
     """Build a targets mapping with personal records configured."""
     return {"personal_records": "records-db"}
+
+
+def test_run_sync_collapses_daily_streak_rows_to_best_value():
+    """Type 16 (daily streak) arrives as one row per day; only the best value
+    is a personal record — the latest day must not overwrite it."""
+    best_streak = PersonalRecord(
+        user_id=1,
+        type_id=16,
+        record_date=date(2026, 9, 1),
+        value_text="11",
+        raw_json={"typeId": 16, "value": 11},
+    )
+    later_lower_streak = PersonalRecord(
+        user_id=1,
+        type_id=16,
+        record_date=date(2026, 9, 2),
+        value_text="3",
+        raw_json={"typeId": 16, "value": 3},
+    )
+    five_k = PersonalRecord(
+        user_id=1,
+        type_id=3,
+        record_date=date(2026, 6, 4),
+        value_text="1914.4",
+        raw_json={"typeId": 3, "value": 1914.4},
+    )
+    session = FakeSession(rows=[[best_streak, later_lower_streak, five_k]])
+    client = FakeNotionClient(results=[])
+    sink = NotionSink(client, dry_run=False, min_interval=0.0, sleep=lambda _s: None)
+    targets = _targets_with_personal_records()
+
+    result = run_sync(session, sink, targets, data_types=["personal_records"])
+
+    info = result["personal_records"]
+    assert info["status"] == "success"
+    assert info["rows"] == 2  # collapsed: best streak + 5K
+    assert info["created"] == 2
+    created_values = {
+        p["properties"]["Record"]["title"][0]["text"]["content"]:
+        p["properties"]["Date"]["date"]["start"]
+        for p in client.pages.created
+    }
+    assert created_values == {"Daily Streak": "2026-09-01", "5K": "2026-06-04"}
 
 
 def test_run_sync_creates_page_when_no_existing_page():

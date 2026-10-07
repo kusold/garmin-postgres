@@ -8,6 +8,7 @@ from notion_sync.formatters import (
     format_activity_type,
     format_entertainment,
     format_pace,
+    format_record_pace,
     format_training_effect,
     format_training_message,
     notion_date,
@@ -56,6 +57,15 @@ def activity_page(activity: Activity) -> tuple[dict, dict, dict | None]:
     activity_type, activity_subtype = format_activity_type(type_key, activity_name)
 
     metadata = _metadata(raw)
+    # Detail payloads put the aerobic TE number in summaryDTO.trainingEffect;
+    # list payloads expose it as top-level aerobicTrainingEffect.
+    aerobic = _metric(raw, "trainingEffect")
+    if aerobic is None:
+        aerobic = _metric(raw, "aerobicTrainingEffect")
+    # Same shape difference for average power: detail averagePower, list avgPower.
+    avg_power = _metric(raw, "averagePower")
+    if avg_power is None:
+        avg_power = _metric(raw, "avgPower")
     properties = {
         "Garmin Activity ID": {"number": activity.activity_id},
         "Date": {"date": {"start": notion_date(activity.start_time or _metric(raw, "startTimeGMT"))}},
@@ -66,10 +76,10 @@ def activity_page(activity: Activity) -> tuple[dict, dict, dict | None]:
         "Duration (min)": {"number": round(number(_metric(raw, "duration")) / 60, 2)},
         "Calories": {"number": round(number(_metric(raw, "calories")))},
         "Avg Pace": {"rich_text": [{"text": {"content": format_pace(_metric(raw, "averageSpeed"))}}]},
-        "Avg Power": {"number": round(number(_metric(raw, "avgPower")), 1)},
+        "Avg Power": {"number": round(number(avg_power), 1)},
         "Max Power": {"number": round(number(_metric(raw, "maxPower")), 1)},
         "Training Effect": {"select": {"name": format_training_effect(_metric(raw, "trainingEffectLabel"))}},
-        "Aerobic": {"number": round(number(_metric(raw, "aerobicTrainingEffect")), 1)},
+        "Aerobic": {"number": round(number(aerobic), 1)},
         "Aerobic Effect": {"select": {"name": format_training_message(_metric(raw, "aerobicTrainingEffectMessage"))}},
         "Anaerobic": {"number": round(number(_metric(raw, "anaerobicTrainingEffect")), 1)},
         "Anaerobic Effect": {"select": {"name": format_training_message(_metric(raw, "anaerobicTrainingEffectMessage"))}},
@@ -109,7 +119,9 @@ def personal_record_page(record: PersonalRecord) -> tuple[dict, dict, dict | Non
     raw = record.raw_json or {}
     name = personal_record_name(record)
     value = record.value_text
-    pace = str(raw.get("pace") or "")
+    # PR payloads carry no pace key; derive it from the duration value and the
+    # known race distance of the record type.
+    pace = format_record_pace(record.type_id, value)
     properties = {
         "Date": {"date": {"start": record.record_date.isoformat()}},
         "Activity Type": {"select": {"name": format_activity_type(record.activity_type)[0]}},

@@ -10,6 +10,7 @@ from garmin_postgres.models.activity import Activity
 from garmin_postgres.models.daily_summary import DailySummary
 from garmin_postgres.models.personal_record import PersonalRecord
 from garmin_postgres.models.user import User
+from notion_sync.formatters import DAILY_STREAK_TYPE_ID
 from notion_sync.mappers import activity_page, daily_steps_page, personal_record_page
 from notion_sync.notion import NotionSink
 
@@ -85,6 +86,30 @@ def _apply_date_window(
     return stmt
 
 
+def _best_streak_per_user(rows: list[PersonalRecord]) -> list[PersonalRecord]:
+    """Keep only each user's best daily-streak row; all other rows pass through.
+
+    Garmin emits the daily-streak type (16) as one row per day, but the
+    personal record is the best streak, not the latest day's value.
+    """
+    out: list[PersonalRecord] = []
+    best: dict[int, tuple[float, PersonalRecord]] = {}
+    for row in rows:
+        if row.type_id != DAILY_STREAK_TYPE_ID:
+            out.append(row)
+            continue
+        try:
+            value = float(row.value_text)
+        except (TypeError, ValueError):
+            continue
+        current = best.get(row.user_id)
+        # Rows arrive ordered by date, so >= keeps the latest of equal values.
+        if current is None or value >= current[0]:
+            best[row.user_id] = (value, row)
+    out.extend(row for _, row in best.values())
+    return out
+
+
 def _sync_table(
     session: Session,
     sink: NotionSink,
@@ -98,6 +123,7 @@ def _sync_table(
     start_date: date | None = None,
     end_date: date | None = None,
     user_filter: str | None = None,
+    row_filter: Callable[[list], list] | None = None,
 ) -> SyncResult:
     if not database_id:
         return SyncResult(
@@ -110,8 +136,12 @@ def _sync_table(
     stmt = _users_clause(stmt, user_filter)
     stmt = date_window(stmt, order_column, start_date, end_date)
 
+    records = list(session.scalars(stmt).all())
+    if row_filter is not None:
+        records = row_filter(records)
+
     rows = created = updated = errors = 0
-    for row in session.scalars(stmt).all():
+    for row in records:
         rows += 1
         try:
             properties, filter_payload, icon = mapper(row)
@@ -210,6 +240,7 @@ def sync_personal_records(
         start_date=start_date,
         end_date=end_date,
         user_filter=user_filter,
+        row_filter=_best_streak_per_user,
     )
 
 

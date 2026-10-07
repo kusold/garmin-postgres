@@ -24,20 +24,58 @@ ACTIVITY_ICONS = {
 }
 
 
+# Garmin emits one row per day for this type (a running daily-streak counter),
+# so many rows share it; every other type arrives as a single best record.
+DAILY_STREAK_TYPE_ID = 16
+
+
 PERSONAL_RECORD_NAMES = {
     1: "1K",
     2: "1mi",
     3: "5K",
     4: "10K",
+    5: "Half Marathon",
+    6: "Marathon",
     7: "Longest Run",
     8: "Longest Ride",
     9: "Total Ascent",
     10: "Max Avg Power (20 min)",
+    11: "Fastest 40 km",
     12: "Most Steps in a Day",
     13: "Most Steps in a Week",
     14: "Most Steps in a Month",
     15: "Longest Goal Streak",
+    16: "Daily Streak",
 }
+
+
+# Race distances in km for duration-type records (value is seconds), used to
+# derive pace. Distance-type records (longest run/ride, steps, streaks) and
+# unknown types have no derivable pace.
+PERSONAL_RECORD_DISTANCES_KM = {
+    1: 1.0,
+    2: 1.609344,
+    3: 5.0,
+    4: 10.0,
+    5: 21.0975,
+    6: 42.195,
+}
+
+
+def format_record_pace(type_id: int, value_text: str | None) -> str:
+    distance = PERSONAL_RECORD_DISTANCES_KM.get(type_id)
+    if not distance or not value_text:
+        return ""
+    try:
+        total_seconds = float(value_text)
+    except ValueError:
+        return ""
+    if total_seconds <= 0:
+        return ""
+    pace_min_km = total_seconds / 60 / distance
+    minutes = int(pace_min_km)
+    seconds = int((pace_min_km - minutes) * 60)
+    return f"{minutes}:{seconds:02d} min/km"
 
 
 def format_activity_type(activity_type: str | None, activity_name: str = "") -> tuple[str, str]:
