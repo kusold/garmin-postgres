@@ -3,6 +3,7 @@ from garmin_postgres.models.activity_detail import ActivityDetail
 from garmin_postgres.models.activity_file import ActivityFile
 from garmin_postgres.models.base import BaseModel
 from garmin_postgres.models.daily_summary import DailySummary
+from garmin_postgres.models.destination_sync_state import DestinationSyncState
 from garmin_postgres.models.personal_record import PersonalRecord
 from garmin_postgres.models.sync_target import SyncTarget
 from garmin_postgres.models.user import User
@@ -13,6 +14,7 @@ __all__ = [
     "ActivityFile",
     "BaseModel",
     "DailySummary",
+    "DestinationSyncState",
     "PersonalRecord",
     "SyncTarget",
     "User",

@@ -78,3 +78,30 @@ def test_migration_backfills_activity_columns_from_raw_json(postgres_container, 
     assert start_time == datetime(2026, 6, 20, 14, 26, 41, tzinfo=timezone.utc)
     assert activity_type == "walking"
     assert table_exists is True
+
+
+def test_migration_preserves_last_written_values(postgres_container, engine):
+    alembic_cfg = Config("alembic.ini")
+    alembic_cfg.set_main_option("sqlalchemy.url", postgres_container.get_connection_url())
+    command.upgrade(alembic_cfg, "head")
+    command.downgrade(alembic_cfg, "4d08c6a719f2")
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO notion_page_states (page_id, properties_json, icon_json)
+            VALUES ('migration-state-page',
+                    '{"Activity Name":"Lakewood Walk Test"}'::jsonb,
+                    '{"type":"emoji","emoji":"🚶"}'::jsonb)
+        """))
+
+    command.upgrade(alembic_cfg, "head")
+
+    with engine.connect() as conn:
+        value = conn.execute(text("""
+            SELECT last_written_json FROM destination_sync_states
+            WHERE destination_key = 'notion' AND item_id = 'migration-state-page'
+        """)).scalar_one()
+
+    assert value == {
+        "properties": {"Activity Name": "Lakewood Walk Test"},
+        "icon": {"type": "emoji", "emoji": "🚶"},
+    }

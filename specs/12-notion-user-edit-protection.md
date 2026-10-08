@@ -13,18 +13,15 @@ stops showing phantom edits every run and the sync makes fewer API calls.
 `NotionSink.upsert_page` (`notion_sync/notion.py`) already queries the
 Notion database for each row's existing page, but used the result only for
 its page ID and overwrote every property via `pages.update`. Notion returns
-each page's current `properties` and `icon` in those query results for
-free, so per-field comparison adds no API calls and needs no stored state.
+each page's current `properties` and `icon` in those query results. Comparing
+them with values the sync last wrote needs persistent sync state, but adds no
+Notion API calls.
 
-Two rules shape the design (agreed with Mike):
+The original implementation used these rules:
 
-- A Garmin-side rename does **not** need to propagate once the activity has
-  synced. So the sync never needs to distinguish a human edit from its own
-  value change: whenever the current Notion value differs from what the
-  sync would write, **Notion wins**. This removes any need for a
-  last-written-values table or a sync-hash field — protection requires
-  reading the page's current per-field values anyway, and exact comparison
-  is strictly more informative than a hash (it says *which* field differs).
+- Whenever the current Notion value differed from the sync payload,
+  **Notion won**. This also blocked Garmin-side renames of pages that had
+  never been edited in Notion.
 - The icon is derived from the activity type. When the type fields are
   human-edited, the derived icon must not be written.
 
@@ -39,22 +36,28 @@ supplied cover with the page's current cover.
    type: title/rich_text compare joined plain text, select compares the
    option name, number compares the number (int/float equal), checkbox the
    boolean, and dates compare parsed instants (naive treated as UTC) with
-   `Z`/`+00:00` and millisecond variants treated as equal — if either side
-   is date-only, the time part is ignored. Only differing properties are
+   `Z`/`+00:00` variants treated as equal. Timed dates compare to the minute,
+   because Notion drops seconds; if either side is date-only, the time part
+   is ignored. Only differing properties are
    sent to `pages.update`. If nothing differs, the update call is skipped
    and the row reports `unchanged`.
 2. **Protected properties (activities only).**
    `PROTECTED_ACTIVITY_PROPERTIES = {Activity Type, Subactivity Type,
-   Activity Name}` (`notion_sync/mappers.py`). A protected property whose
-   current value differs from the payload is dropped from the update and
-   logged at info. Corollary: future formatter changes also do not rewrite
-   these three fields on existing pages.
-3. **Icon (activities).** Icons are derived, never independent data. On
-   update the icon is only written when the page has none; a differing icon
-   means a human chose it. Daily steps and personal records (no protected
-   properties) keep plain diff-only behavior: a drifted icon is refreshed.
-4. **Create path.** New pages get the full payload and icon; no diffing or
-   protection applies.
+   Activity Name}` (`notion_sync/mappers.py`). The sync stores its last written
+   value per destination item in `destination_sync_states`. The table stores
+   opaque JSON and uses a destination namespace plus item ID as its key;
+   the Notion adapter decides the JSON shape. A new Garmin value replaces the
+   current value only when the current value still matches that baseline.
+   A differing Notion value is preserved. Legacy pages without a baseline
+   can advance when their creation and last-edit timestamps match; a matching
+   field also seeds its baseline. A legacy page with an unexplained difference
+   remains protected.
+3. **Icon (activities).** The last written icon is tracked alongside the
+   protected properties, so a Garmin activity-type edit can update an
+   untouched icon. A human-chosen icon is preserved. Daily steps and personal
+   records keep plain diff-only behavior.
+4. **Create path.** New pages get the full payload and icon, and establish the
+   first last-written baseline.
 5. **Cover.** When a cover is supplied for an existing page, a cover-only
    change still updates the page. A matching cover does not trigger a write.
 
@@ -65,8 +68,8 @@ run's summary shows how many pages needed no write.
 
 Per row per run, before: one query + one update (always). After: one query
 for unchanged rows, one query + one update only when something actually
-changed. Protection itself costs nothing — the page's current values
-already arrive with the query.
+changed. Protection adds local state reads and writes, but no Notion API calls:
+the page's current values already arrive with the query.
 
 ## Out of Scope
 

@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 from garmin_postgres.models.activity import Activity
 from garmin_postgres.models.daily_summary import DailySummary
 from garmin_postgres.models.personal_record import PersonalRecord
+from garmin_postgres.models.user import User
 from notion_sync.formatters import (
     PERSONAL_RECORD_NAMES,
     format_duration,
@@ -30,6 +31,7 @@ from notion_sync.sync import (
     sync_daily_steps,
 )
 from notion_sync.updates import plan_update
+from garmin_postgres.sync_state import SyncStateStore
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -93,6 +95,7 @@ class FakePages:
 
     def create(self, **kwargs):
         self.created.append(kwargs)
+        return {"id": "created-page"}
 
     def update(self, **kwargs):
         self.updated.append(kwargs)
@@ -654,8 +657,7 @@ def test_plan_update_sends_only_differing_unprotected_property():
 
 
 def test_plan_update_preserves_human_edited_protected_property():
-    """A protected property that differs from the payload is left alone —
-    the same rule keeps a Garmin-side rename out of Notion."""
+    """An edited field with no matching last-written baseline is preserved."""
     properties, _, icon = _activity_payload()
     page = _existing_page(properties, icon=icon)
     page["properties"]["Activity Name"]["title"][0]["plain_text"] = "Katie's Title"
@@ -695,6 +697,51 @@ def test_plan_update_never_overwrites_differing_activity_icon():
     assert icon_out is None
 
 
+def test_plan_update_refreshes_activity_icon_when_last_written_icon_is_untouched():
+    properties, _, icon = _activity_payload()
+    page = _existing_page(properties, icon=icon)
+    new_icon = {"type": "emoji", "emoji": "🚴"}
+
+    _, icon_out, action = plan_update(
+        page, properties, icon=new_icon,
+        protected=PROTECTED_ACTIVITY_PROPERTIES,
+        icon_baseline=icon,
+    )
+
+    assert action == "updated"
+    assert icon_out == new_icon
+
+    page["icon"] = {"type": "emoji", "emoji": "👑"}
+    _, icon_out, action = plan_update(
+        page, properties, icon=new_icon,
+        protected=PROTECTED_ACTIVITY_PROPERTIES,
+        icon_baseline=icon,
+    )
+    assert action == "unchanged"
+    assert icon_out is None
+
+
+@pytest.mark.parametrize("field", ["Activity Type", "Subactivity Type"])
+def test_plan_update_preserves_icon_when_human_edited_type_is_retained(field):
+    properties, _, old_icon = _activity_payload()
+    page = _existing_page(properties, icon=old_icon)
+    last_written_type = properties[field]["select"]["name"]
+    page["properties"][field]["select"]["name"] = "Walking"
+    desired = {**properties, field: {"select": {"name": "Cycling"}}}
+    new_icon = {"type": "emoji", "emoji": "🚴"}
+
+    changed, icon_out, action = plan_update(
+        page, desired, icon=new_icon,
+        protected=PROTECTED_ACTIVITY_PROPERTIES,
+        protected_baseline={field: last_written_type},
+        icon_baseline=old_icon,
+    )
+
+    assert changed == {}
+    assert icon_out is None
+    assert action == "unchanged"
+
+
 def test_plan_update_fills_missing_activity_icon():
     properties, _, icon = _activity_payload()
     page = _existing_page(properties)  # no icon on the page yet
@@ -724,6 +771,7 @@ def test_plan_update_treats_date_iso_variants_as_equal():
     for start in (
         "2026-06-20T14:26:41+00:00",
         "2026-06-20T14:26:41.000Z",
+        "2026-06-20T14:26:00.000Z",  # Notion drops seconds from date properties
         "2026-06-20",  # Notion may drop the time part
     ):
         page = _existing_page(properties)
@@ -826,6 +874,61 @@ def test_notion_sink_preserves_user_edited_activity_name():
     assert client.pages.updated == []
 
 
+def test_notion_sink_propagates_garmin_rename_when_notion_name_was_untouched():
+    properties, filter_payload, icon = _activity_payload()
+    page = _existing_page(properties, icon=icon)
+    page["created_time"] = "2026-10-08T20:00:00.000Z"
+    page["last_edited_time"] = page["created_time"]
+    original_name = page["properties"]["Activity Name"]["title"][0]["plain_text"]
+    properties["Activity Name"] = {"title": [{"text": {"content": "New Garmin Name"}}]}
+    client = FakeNotionClient(results=[page])
+    sink = NotionSink(client, min_interval=0.0)
+
+    action = sink.upsert_page(
+        "db",
+        filter_payload=filter_payload,
+        properties=properties,
+        icon=icon,
+        protected=PROTECTED_ACTIVITY_PROPERTIES,
+    )
+
+    assert original_name != "New Garmin Name"
+    assert action == "updated"
+    assert client.pages.updated[0]["properties"]["Activity Name"] == properties["Activity Name"]
+
+
+def test_notion_sink_tracks_last_written_name_and_preserves_later_notion_edit(session):
+    properties, filter_payload, icon = _activity_payload()
+    page = _existing_page(properties, icon=icon)
+    page["created_time"] = "2026-10-08T20:00:00.000Z"
+    page["last_edited_time"] = page["created_time"]
+    client = FakeNotionClient(results=[page])
+    name = page["properties"]["Activity Name"]["title"][0]
+
+    properties["Activity Name"] = {"title": [{"text": {"content": "First Garmin Rename"}}]}
+    assert NotionSink(client, min_interval=0, state_store=SyncStateStore(session)).upsert_page(
+        "db", filter_payload=filter_payload, properties=properties, icon=icon,
+        protected=PROTECTED_ACTIVITY_PROPERTIES,
+    ) == "updated"
+    name["plain_text"] = "First Garmin Rename"
+    page["last_edited_time"] = "2026-10-08T20:01:00.000Z"
+
+    properties["Activity Name"] = {"title": [{"text": {"content": "Second Garmin Rename"}}]}
+    assert NotionSink(client, min_interval=0, state_store=SyncStateStore(session)).upsert_page(
+        "db", filter_payload=filter_payload, properties=properties, icon=icon,
+        protected=PROTECTED_ACTIVITY_PROPERTIES,
+    ) == "updated"
+    assert client.pages.updated[-1]["properties"]["Activity Name"] == properties["Activity Name"]
+
+    name["plain_text"] = "Notion Custom Title"
+    properties["Activity Name"] = {"title": [{"text": {"content": "Third Garmin Rename"}}]}
+    assert NotionSink(client, min_interval=0, state_store=SyncStateStore(session)).upsert_page(
+        "db", filter_payload=filter_payload, properties=properties, icon=icon,
+        protected=PROTECTED_ACTIVITY_PROPERTIES,
+    ) == "unchanged"
+    assert len(client.pages.updated) == 2
+
+
 def test_notion_sink_updates_only_changed_property():
     properties, filter_payload, icon = _activity_payload()
     page = _existing_page(properties, icon=icon)
@@ -887,6 +990,30 @@ def test_sync_activities_passes_protected_properties_and_counts_unchanged():
     assert result.rows == 1
     assert result.unchanged == 1
     assert result.updated == 0
+
+
+def test_sync_activities_includes_old_activity_refreshed_in_archive(session):
+    user = User(garmin_display_name="notion-edited-activity")
+    session.add(user)
+    session.flush()
+    session.add(Activity(
+        user_id=user.id,
+        activity_id=24604320109,
+        activity_type="walking",
+        start_time=datetime(2026, 10, 4, 12, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 10, 8, 6, tzinfo=timezone.utc),
+        raw_json={"activityName": "Lakewood Walk Test"},
+    ))
+    session.flush()
+    sink = _RecordingSink("updated")
+
+    result = sync_activities(
+        session, sink, "db", user_id=user.id,
+        start_date=date(2026, 10, 6), end_date=date(2026, 10, 7),
+    )
+
+    assert result.rows == 1
+    assert result.updated == 1
 
 
 def test_sync_daily_steps_passes_no_protected_properties():

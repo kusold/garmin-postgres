@@ -49,6 +49,10 @@ class GarminClient:
         logger.debug("Fetching activities from %s to %s", startdate, enddate)
         return self._garmin.get_activities_by_date(startdate, enddate)
 
+    def get_activities(self, start: int, limit: int) -> list[dict]:
+        """Fetch one page of activities, including edits to older activities."""
+        return self._garmin.get_activities(start=start, limit=limit)
+
     def get_activity(self, activity_id: str) -> dict:
         """Fetch detailed data for a single activity.
 

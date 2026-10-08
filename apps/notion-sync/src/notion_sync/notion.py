@@ -2,7 +2,11 @@ import time
 from collections.abc import Collection
 from typing import Any, Callable
 
-from notion_sync.updates import plan_update
+from garmin_postgres.sync_state import SyncStateStore
+from notion_sync.updates import _icons_equal, _property_value, plan_update
+
+
+_DESTINATION_KEY = "notion"
 
 
 class NotionSink:
@@ -14,7 +18,7 @@ class NotionSink:
     Updates are minimal: the query already returns each existing page, so
     ``plan_update`` diffs the payload against the page and only changed
     properties are sent. Pages whose values all match are not rewritten, and
-    protected properties a user edited in Notion are never overwritten.
+    last-written state protects properties a user edited in Notion.
 
     Since Notion API version 2025-09-03 (notion-client 3.x), databases are
     containers whose rows belong to data sources. Configured database IDs are
@@ -31,6 +35,7 @@ class NotionSink:
         min_interval: float = 0.34,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
+        state_store: SyncStateStore | None = None,
     ) -> None:
         self.client = client
         self.dry_run = dry_run
@@ -43,6 +48,18 @@ class NotionSink:
         # database_id -> resolved data_source_id, so discovery happens once
         # per configured database per run.
         self._data_source_ids: dict[str, str] = {}
+        self._state_store = state_store
+
+    def _remember_protected(
+        self, page_id: str, values: dict[str, Any], icon: dict | None = None,
+    ) -> None:
+        if (not values and icon is None) or self._state_store is None:
+            return
+        state = self._state_store.get(_DESTINATION_KEY, page_id) or {}
+        state["properties"] = {**state.get("properties", {}), **values}
+        if icon is not None:
+            state["icon"] = icon
+        self._state_store.put(_DESTINATION_KEY, page_id, state)
 
     def _invoke(self, fn: Callable[..., Any], /, **kwargs: Any) -> Any:
         """Pace the next client call; the client handles retries."""
@@ -98,11 +115,39 @@ class NotionSink:
 
         if existing:
             page = existing[0]
+            state = (
+                self._state_store.get(_DESTINATION_KEY, page["id"])
+                if self._state_store is not None else None
+            )
+            baseline = state.get("properties") if state is not None else None
+            pristine = bool(
+                page.get("created_time")
+                and page.get("created_time") == page.get("last_edited_time")
+            )
             changed, icon_to_write, action = plan_update(
-                page, properties, icon=icon, protected=protected
+                page, properties, icon=icon, protected=protected,
+                protected_baseline=baseline,
+                icon_baseline=state.get("icon") if state else None,
+                pristine=pristine,
+            )
+            remembered = {
+                name: _property_value(prop)
+                for name, prop in properties.items()
+                if name in protected
+                and (
+                    name in changed
+                    or _property_value(page.get("properties", {}).get(name))
+                    == _property_value(prop)
+                )
+            }
+            remembered_icon = (
+                icon if protected and icon and (
+                    icon_to_write or _icons_equal(page.get("icon"), icon)
+                ) else None
             )
             cover_to_write = cover if cover and cover != page.get("cover") else None
             if action == "unchanged" and cover_to_write is None:
+                self._remember_protected(page["id"], remembered, remembered_icon)
                 return "unchanged"
             update_payload: dict[str, Any] = {
                 "page_id": page["id"],
@@ -113,6 +158,7 @@ class NotionSink:
             if cover_to_write:
                 update_payload["cover"] = cover_to_write
             self._invoke(self.client.pages.update, **update_payload)
+            self._remember_protected(page["id"], remembered, remembered_icon)
             return "updated"
 
         create_payload: dict[str, Any] = {
@@ -123,5 +169,11 @@ class NotionSink:
             create_payload["icon"] = icon
         if cover:
             create_payload["cover"] = cover
-        self._invoke(self.client.pages.create, **create_payload)
+        created = self._invoke(self.client.pages.create, **create_payload)
+        if isinstance(created, dict) and created.get("id"):
+            self._remember_protected(
+                created["id"],
+                {name: _property_value(prop) for name, prop in properties.items() if name in protected},
+                icon if protected else None,
+            )
         return "created"

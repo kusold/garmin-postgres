@@ -36,9 +36,8 @@ def _emoji_icon(emoji: str | None) -> dict | None:
     return {"type": "emoji", "emoji": emoji} if emoji else None
 
 
-# Activity properties a user may edit by hand in Notion. When the current
-# Notion value differs from what the sync would write, Notion wins and the
-# property is left untouched (see notion_sync.updates.plan_update).
+# Activity properties a user may edit by hand in Notion. The sync compares
+# each current value to its last written value before advancing Garmin edits.
 PROTECTED_ACTIVITY_PROPERTIES = frozenset(
     {"Activity Type", "Subactivity Type", "Activity Name"}
 )

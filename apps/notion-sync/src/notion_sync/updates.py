@@ -2,9 +2,8 @@
 
 The sync already queries Notion for each row's existing page; these pure
 helpers turn the returned page into a minimal update. Unchanged pages are
-not rewritten, and human edits to protected properties are never
-overwritten — whenever the current Notion value differs from what the sync
-would write, Notion wins.
+not rewritten. A protected value advances only while it matches the value
+last written by the sync, or on a legacy page untouched since creation.
 """
 
 import logging
@@ -84,22 +83,38 @@ def _dates_equal(ours: tuple, theirs: tuple) -> bool:
     # A date-only side ignores the time part (Notion may drop the time).
     if not (our_has_time and their_has_time):
         return our_when.date() == their_when.date()
-    return our_when == their_when
+    # Notion date properties retain minute precision and drop seconds.
+    return our_when.replace(second=0, microsecond=0) == their_when.replace(
+        second=0, microsecond=0
+    )
 
 
-def _plan_icon(existing_page: dict, icon: dict | None, *, protect: bool) -> dict | None:
-    """Icons are derived, never independent data. With protected properties
-    (activities) a differing icon means a human chose it, so only a missing
-    icon is filled in; otherwise a drifted icon is refreshed."""
+def _icons_equal(current: dict | None, desired: dict | None) -> bool:
+    if not isinstance(current, dict) or not isinstance(desired, dict):
+        return current == desired
+    kind = desired.get("type")
+    return current.get("type") == kind and current.get(kind) == desired.get(kind)
+
+
+def _plan_icon(
+    existing_page: dict,
+    icon: dict | None,
+    *,
+    protect: bool,
+    baseline: dict | None,
+    pristine: bool,
+) -> dict | None:
+    """Refresh derived icons unless the page icon was changed in Notion."""
     if icon is None:
         return None
     current_icon = existing_page.get("icon")
     if not isinstance(current_icon, dict):
         return icon
-    kind = icon.get("type")
-    if current_icon.get("type") == kind and current_icon.get(kind) == icon.get(kind):
+    if _icons_equal(current_icon, icon):
         return None  # already matches
-    return None if protect else icon
+    if protect and not (_icons_equal(current_icon, baseline) or (pristine and baseline is None)):
+        return None
+    return icon
 
 
 def plan_update(
@@ -107,30 +122,45 @@ def plan_update(
     properties: dict,
     icon: dict | None = None,
     protected: Collection[str] = frozenset(),
+    protected_baseline: dict[str, Any] | None = None,
+    icon_baseline: dict | None = None,
+    pristine: bool = False,
 ) -> tuple[dict, dict | None, str]:
     """Decide the minimal update for an existing page.
 
     Returns ``(changed_properties, icon_or_none, action)`` where ``action``
     is ``"updated"`` when something needs writing, else ``"unchanged"``.
-    Properties whose current value matches the payload are dropped from the
-    update; a protected property whose value differs is left untouched
-    (Notion wins), and a protected data type never has its icon overwritten.
+    A protected property advances when its current value still equals the
+    last value written by the sync. Legacy pages with no baseline may also
+    advance if they have never been edited since creation.
     """
     current = existing_page.get("properties") or {}
     changed: dict[str, Any] = {}
+    protected_type_retained = False
     for name, payload_prop in properties.items():
         if _values_equal(
             _property_value(payload_prop), _property_value(current.get(name))
         ):
             continue
-        if name in protected:
+        last_written = protected_baseline.get(name) if protected_baseline else None
+        has_baseline = protected_baseline is not None and name in protected_baseline
+        can_advance = (
+            (has_baseline and _values_equal(_property_value(current.get(name)), last_written))
+            or (pristine and not has_baseline)
+        )
+        if name in protected and not can_advance:
+            if name in {"Activity Type", "Subactivity Type"}:
+                protected_type_retained = True
             logger.info(
-                "Preserving Notion value of %r on page %s; it differs from the synced value",
+                "Preserving Notion value of %r on page %s; it differs from the last synced value",
                 name,
                 existing_page.get("id"),
             )
             continue
         changed[name] = payload_prop
-    icon_to_write = _plan_icon(existing_page, icon, protect=bool(protected))
+    icon_to_write = None if protected_type_retained else _plan_icon(
+        existing_page, icon, protect=bool(protected),
+        baseline=icon_baseline, pristine=pristine,
+    )
     action = "updated" if changed or icon_to_write else "unchanged"
     return changed, icon_to_write, action

@@ -131,6 +131,95 @@ def _create_activity(session, user_id, activity_id=100) -> Activity:
     return activity
 
 
+@pytest.mark.parametrize(
+    ("new_name", "new_type", "favorite"),
+    [
+        ("Lakewood Walk Test", "running", False),
+        ("Test Run", "walking", False),
+        ("Test Run", "running", True),
+    ],
+)
+def test_incremental_ingest_refreshes_edited_older_activity(
+    session, monkeypatch, new_name, new_type, favorite,
+):
+    user = _create_user(session)
+    activity_id = 24604320109
+    _create_activity(session, user.id, activity_id)
+    calls = []
+
+    class FakeGarminClient:
+        def __init__(self, garmin):
+            self.garmin = garmin
+
+        def get_activities_by_date(self, startdate, enddate):
+            return []
+
+        def get_activities(self, start, limit):
+            calls.append((start, limit))
+            return [{
+                "activityId": activity_id,
+                "activityName": new_name,
+                "activityType": {"typeKey": new_type},
+                "favorite": favorite,
+            }]
+
+        def get_activity(self, activity_id_text):
+            return {
+                "activityId": int(activity_id_text),
+                "activityName": new_name,
+                "activityTypeDTO": {"typeKey": new_type},
+                "metadataDTO": {"favorite": favorite},
+                "summaryDTO": {"startTimeGMT": "2026-06-01T07:30:00"},
+            }
+
+    monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
+    monkeypatch.setattr(runners, "GarminClient", FakeGarminClient)
+    monkeypatch.setattr(runners, "save_tokens", lambda session, user, garmin: None)
+    monkeypatch.setattr(runners.time, "sleep", lambda seconds: None)
+
+    result = runners.ingest_activities_range(
+        user_id=user.id, start_date=date(2026, 6, 10), end_date=date(2026, 6, 10),
+        include_details=False, include_files=False, session=session,
+    )
+
+    session.expire_all()
+    refreshed = session.scalars(
+        select(Activity).where(Activity.user_id == user.id, Activity.activity_id == activity_id)
+    ).one()
+    assert result.rows == 1
+    assert calls == [(0, 1000)]
+    assert refreshed.raw_json["activityName"] == new_name
+    assert refreshed.activity_type == new_type
+    assert refreshed.raw_json["metadataDTO"]["favorite"] is favorite
+
+
+def test_archive_scan_failure_keeps_date_window_activities(session, monkeypatch):
+    user = _create_user(session)
+    _create_activity(session, user.id, 24604320109)
+    in_window = {"activityId": 24604320110, "activityName": "Today Run"}
+
+    class FakeGarminClient:
+        def __init__(self, garmin):
+            self.garmin = garmin
+
+        def get_activities_by_date(self, startdate, enddate):
+            return [in_window]
+
+        def get_activities(self, start, limit):
+            raise TimeoutError("archive request timed out")
+
+    monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
+    monkeypatch.setattr(runners, "GarminClient", FakeGarminClient)
+    monkeypatch.setattr(runners, "save_tokens", lambda session, user, garmin: None)
+
+    result = runners.list_activity_summaries(
+        user_id=user.id, start_date=date(2026, 6, 10), end_date=date(2026, 6, 10),
+        session=session,
+    )
+
+    assert result == [in_window]
+
+
 class TestUpsertActivity:
     def test_insert_new_activity(self, session):
         user = _create_user(session)

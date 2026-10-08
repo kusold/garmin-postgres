@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Protocol
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlmodel import Session
 
 from garmin_postgres.models.activity import Activity
@@ -87,6 +87,29 @@ def _apply_datetime_window(
     if end_date:
         end_before = datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=timezone.utc)
         stmt = stmt.where(column < end_before)
+    return stmt
+
+
+def _apply_activity_window(
+    stmt,
+    column,
+    start_date: date | None,
+    end_date: date | None,
+):
+    """Include activities edited in the archive after the window began."""
+    if start_date:
+        start_at = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
+    if end_date:
+        end_before = datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=timezone.utc)
+    if start_date and end_date:
+        return stmt.where(or_(
+            and_(column >= start_at, column < end_before),
+            Activity.updated_at >= start_at,
+        ))
+    if start_date:
+        return stmt.where(or_(column >= start_at, Activity.updated_at >= start_at))
+    if end_date:
+        return stmt.where(column < end_before)
     return stmt
 
 
@@ -217,7 +240,7 @@ def sync_activities(
         label="activities",
         model=Activity,
         order_column=Activity.start_time,
-        date_window=_apply_datetime_window,
+        date_window=_apply_activity_window,
         mapper=activity_page,
         start_date=start_date,
         end_date=end_date,

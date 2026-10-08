@@ -54,8 +54,9 @@ def _notion_client(monkeypatch):
     monkeypatch.setattr(run, "Client", make_client)
     monkeypatch.setattr(
         run, "NotionSink",
-        lambda notion_client, *, dry_run: NotionSink(
+        lambda notion_client, *, dry_run, state_store: NotionSink(
             notion_client, dry_run=dry_run, min_interval=0,
+            state_store=state_store,
         ),
     )
     return client, options
@@ -72,7 +73,7 @@ def test_user_run_filters_by_id_and_dates_but_replays_record_snapshot(session, m
         "personal_records": "records-db",
     })
     session.add_all([
-        Activity(user_id=user.id, activity_id=1, start_time=datetime(2026, 7, 1, tzinfo=timezone.utc), raw_json={}),
+        Activity(user_id=user.id, activity_id=1, start_time=datetime(2026, 7, 1, tzinfo=timezone.utc), updated_at=datetime(2026, 7, 1, tzinfo=timezone.utc), raw_json={}),
         Activity(user_id=user.id, activity_id=2, start_time=datetime(2026, 7, 30, tzinfo=timezone.utc), raw_json={}),
         Activity(user_id=other.id, activity_id=3, start_time=datetime(2026, 7, 30, tzinfo=timezone.utc), raw_json={}),
         DailySummary(user_id=user.id, calendar_date=date(2026, 7, 1), raw_json={}),

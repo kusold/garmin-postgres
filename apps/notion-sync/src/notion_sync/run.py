@@ -8,6 +8,7 @@ from sqlmodel import Session
 
 from garmin_postgres.db import get_engine
 from garmin_postgres.models.user import User
+from garmin_postgres.sync_state import SyncStateStore
 from notion_sync.notion import NotionSink
 from notion_sync.sync import DATA_TYPES, run_sync
 from notion_sync.targets import _notion_config, sync_target
@@ -77,11 +78,16 @@ def run_user_sync(
         if token:
             # SDK retries are method-aware; the sink owns only call pacing.
             with Client(auth=token, retry=RetryOptions(max_retries=5)) as client:
-                sink = NotionSink(client, dry_run=dry_run)
-                return run_sync(
+                sink = NotionSink(
+                    client, dry_run=dry_run, state_store=SyncStateStore(session),
+                )
+                result = run_sync(
                     session, sink, targets, data_types=selected,
                     start_date=start_date, end_date=end_date, user_id=user_id,
                 )
+                if not dry_run:
+                    session.commit()
+                return result
 
         return run_sync(
             session, _DatabasePreviewSink(), targets, data_types=selected,
