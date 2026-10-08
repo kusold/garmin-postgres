@@ -20,6 +20,7 @@ from notion_sync.notion import NotionSink
 from notion_sync.sync import (
     _apply_date_window,
     _apply_datetime_window,
+    _current_streak_per_user,
 )
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -407,6 +408,74 @@ def test_personal_record_page_maps_currently_ingested_personal_records():
     assert properties["PR"]["checkbox"] is True
     assert filter_payload == {"property": "typeId", "number": {"equals": 3}}
     assert icon == {"type": "emoji", "emoji": "🏃‍♀️"}
+
+
+def test_current_streak_per_user_keeps_latest_not_best_daily_streak_row():
+    """The daily-streak page tracks the current streak; the all-time best is
+    type 15 (Longest Goal Streak), which syncs as its own row."""
+    streak_peak = PersonalRecord(
+        user_id=1, type_id=16, record_date=date(2026, 8, 28), value_text="46.0",
+        raw_json={"typeId": 16, "value": 46.0},
+    )
+    streak_now = PersonalRecord(
+        user_id=1, type_id=16, record_date=date(2026, 10, 6), value_text="25.0",
+        raw_json={"typeId": 16, "value": 25.0},
+    )
+    goal_streak = PersonalRecord(
+        user_id=1, type_id=15, record_date=date(2024, 4, 25), value_text="838.0",
+        raw_json={"typeId": 15, "value": 838.0},
+    )
+
+    result = _current_streak_per_user([streak_peak, streak_now, goal_streak])
+
+    assert streak_peak not in result
+    assert result.count(streak_now) == 1
+    assert goal_streak in result
+
+
+def test_current_streak_per_user_prefers_higher_value_on_reset_day():
+    """Garmin can emit two type-16 rows for a reset day (0 and 1); the running
+    count for that day is the higher one."""
+    reset_zero = PersonalRecord(
+        user_id=1, type_id=16, record_date=date(2026, 9, 12), value_text="0.0",
+        raw_json={"typeId": 16, "value": 0.0},
+    )
+    reset_one = PersonalRecord(
+        user_id=1, type_id=16, record_date=date(2026, 9, 12), value_text="1.0",
+        raw_json={"typeId": 16, "value": 1.0},
+    )
+
+    assert _current_streak_per_user([reset_zero, reset_one]) == [reset_one]
+    assert _current_streak_per_user([reset_one, reset_zero]) == [reset_one]
+
+
+def test_current_streak_per_user_tracks_each_user_independently():
+    katie = PersonalRecord(
+        user_id=1, type_id=16, record_date=date(2026, 10, 6), value_text="25.0",
+        raw_json={"typeId": 16, "value": 25.0},
+    )
+    mike = PersonalRecord(
+        user_id=2, type_id=16, record_date=date(2026, 10, 6), value_text="11.0",
+        raw_json={"typeId": 16, "value": 11.0},
+    )
+
+    result = _current_streak_per_user([katie, mike])
+
+    assert result.count(katie) == 1
+    assert result.count(mike) == 1
+
+
+def test_current_streak_per_user_skips_unparseable_values():
+    good = PersonalRecord(
+        user_id=1, type_id=16, record_date=date(2026, 10, 6), value_text="25.0",
+        raw_json={"typeId": 16, "value": 25.0},
+    )
+    garbage = PersonalRecord(
+        user_id=1, type_id=16, record_date=date(2026, 10, 7), value_text="not-a-number",
+        raw_json={"typeId": 16, "value": "not-a-number"},
+    )
+
+    assert _current_streak_per_user([good, garbage]) == [good]
 
 
 def test_notion_sink_creates_when_no_existing_page():

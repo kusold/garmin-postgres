@@ -96,14 +96,16 @@ def _apply_date_window(
     return stmt
 
 
-def _best_streak_per_user(rows: list[PersonalRecord]) -> list[PersonalRecord]:
-    """Keep only each user's best daily-streak row; all other rows pass through.
+def _current_streak_per_user(rows: list[PersonalRecord]) -> list[PersonalRecord]:
+    """Keep only each user's latest daily-streak row; all other rows pass through.
 
-    Garmin emits the daily-streak type (16) as one row per day, but the
-    personal record is the best streak, not the latest day's value.
+    Garmin emits the daily-streak type (16) as one row per day — a running
+    counter that resets when the streak breaks — so the page tracks the
+    current streak, matching Garmin's own display. The all-time best is a
+    separate record type (15, Longest Goal Streak) that syncs unchanged.
     """
     out: list[PersonalRecord] = []
-    best: dict[int, tuple[float, PersonalRecord]] = {}
+    latest: dict[int, tuple[date, float, PersonalRecord]] = {}
     for row in rows:
         if row.type_id != DAILY_STREAK_TYPE_ID:
             out.append(row)
@@ -112,11 +114,16 @@ def _best_streak_per_user(rows: list[PersonalRecord]) -> list[PersonalRecord]:
             value = float(row.value_text)
         except (TypeError, ValueError):
             continue
-        current = best.get(row.user_id)
-        # Rows arrive ordered by date, so >= keeps the latest of equal values.
-        if current is None or value >= current[0]:
-            best[row.user_id] = (value, row)
-    out.extend(row for _, row in best.values())
+        current = latest.get(row.user_id)
+        # Garmin can emit two rows for a reset day (0 and 1); keep the higher
+        # value on the most recent date.
+        if (
+            current is None
+            or row.record_date > current[0]
+            or (row.record_date == current[0] and value >= current[1])
+        ):
+            latest[row.user_id] = (row.record_date, value, row)
+    out.extend(row for _, _, row in latest.values())
     return out
 
 
@@ -246,7 +253,7 @@ def sync_personal_records(
         date_window=_apply_date_window,
         mapper=personal_record_page,
         user_id=user_id,
-        row_filter=_best_streak_per_user,
+        row_filter=_current_streak_per_user,
     )
 
 
