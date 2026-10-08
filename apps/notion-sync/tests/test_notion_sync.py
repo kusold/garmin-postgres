@@ -11,7 +11,9 @@ from garmin_postgres.models.daily_summary import DailySummary
 from garmin_postgres.models.personal_record import PersonalRecord
 from notion_sync.formatters import (
     PERSONAL_RECORD_NAMES,
+    format_duration,
     format_record_pace,
+    format_record_value,
 )
 from notion_sync.mappers import activity_page, daily_steps_page, personal_record_page
 from notion_sync.notion import NotionSink
@@ -128,6 +130,7 @@ def test_activity_page_maps_postgres_activity_to_notion_properties():
     assert properties["Activity Name"]["title"][0]["text"]["content"] == "Morning Run"
     assert properties["Distance (km)"]["number"] == 5.0
     assert properties["Duration (min)"]["number"] == 30.0
+    assert properties["Duration"]["rich_text"][0]["text"]["content"] == "30:00"
     assert properties["PR"]["checkbox"] is True
     assert icon is not None
 
@@ -250,6 +253,7 @@ def test_activity_page_maps_summary_dto_payload_shape():
     assert properties["Activity Type"]["select"]["name"] == "Walking"
     assert properties["Distance (km)"]["number"] == 2.56
     assert properties["Duration (min)"]["number"] == 42.48
+    assert properties["Duration"]["rich_text"][0]["text"]["content"] == "42:29"
     assert properties["Calories"]["number"] == 146
     assert properties["Avg Pace"]["rich_text"][0]["text"]["content"] == "16:36 min/km"
     assert properties["Fav"]["checkbox"] is True
@@ -267,6 +271,56 @@ def test_personal_record_names_cover_all_garmin_type_ids():
     assert PERSONAL_RECORD_NAMES[16] == "Daily Streak"
 
 
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [
+        (178, "2:58"),
+        (3741, "1:02:21"),
+        (3599.6, "1:00:00"),
+        (62.5, "1:02"),
+        (None, ""),
+        (0, ""),
+        (-1, ""),
+        (float("nan"), ""),
+        (float("inf"), ""),
+        ("invalid", ""),
+    ],
+)
+def test_format_duration(seconds, expected):
+    assert format_duration(seconds) == expected
+
+
+@pytest.mark.parametrize(
+    ("type_id", "raw_value", "expected"),
+    [
+        (1, "178.0", "2:58"),
+        (2, "292.0", "4:52"),
+        (3, "1074.0", "17:54"),
+        (4, "2236.0", "37:16"),
+        (5, "5012.0", "1:23:32"),
+        (6, "9876.0", "2:44:36"),
+        (7, "32165.0", "32.16 km"),
+        (8, "73540.0", "73.54 km"),
+        (9, "1234.0", "1,234 m"),
+        (10, "265.0", "265 W"),
+        (11, "5421.0", "1:30:21"),
+        (12, "27106", "27,106"),
+        (13, "27106", "27,106"),
+        (14, "27106", "27,106"),
+        (15, "42.0", "42 days"),
+        (16, "137.0", "137 days"),
+        (99, "123.0", "123.0"),
+        (3, "00:22:14", "00:22:14"),
+        (3, "not-a-number", "not-a-number"),
+        (3, "nan", "nan"),
+        (7, "inf", "inf"),
+        (3, None, ""),
+    ],
+)
+def test_format_record_value(type_id, raw_value, expected):
+    assert format_record_value(type_id, raw_value) == expected
+
+
 def test_personal_record_page_computes_pace_for_running_duration_records():
     """PR payloads carry no pace key; pace must be derived from the duration
     value and the known race distance of the type."""
@@ -282,6 +336,7 @@ def test_personal_record_page_computes_pace_for_running_duration_records():
     properties, _, _ = personal_record_page(record)
 
     assert properties["Record"]["title"][0]["text"]["content"] == "5K"
+    assert properties["Value"]["rich_text"][0]["text"]["content"] == "31:54"
     assert properties["Pace"]["rich_text"][0]["text"]["content"] == "6:22 min/km"
 
 
@@ -298,6 +353,7 @@ def test_personal_record_page_pace_blank_for_non_duration_records():
     properties, _, _ = personal_record_page(record)
 
     assert properties["Pace"]["rich_text"][0]["text"]["content"] == ""
+    assert properties["Value"]["rich_text"][0]["text"]["content"] == "46.05 km"
 
 
 def test_format_record_pace_handles_missing_and_garbage_values():
@@ -306,6 +362,14 @@ def test_format_record_pace_handles_missing_and_garbage_values():
     assert format_record_pace(3, "not-a-number") == ""
     assert format_record_pace(99, "1800.0") == ""  # unknown type
     assert format_record_pace(3, "0") == ""
+    assert format_record_pace(3, "nan") == ""
+    assert format_record_pace(3, "inf") == ""
+    assert format_record_pace(11, "00:22:14") == ""
+    assert format_record_pace(11, "1e-320") == ""
+
+
+def test_format_record_pace_uses_speed_for_cycling_record():
+    assert format_record_pace(11, "5421.0") == "26.6 km/h"
 
 
 def test_daily_steps_page_maps_daily_summary_raw_json():
@@ -339,6 +403,7 @@ def test_personal_record_page_maps_currently_ingested_personal_records():
 
     assert properties["Record"]["title"][0]["text"]["content"] == "5K"
     assert properties["Value"]["rich_text"][0]["text"]["content"] == "00:22:14"
+    assert properties["Pace"]["rich_text"][0]["text"]["content"] == ""
     assert properties["PR"]["checkbox"] is True
     assert filter_payload == {"property": "typeId", "number": {"equals": 3}}
     assert icon is None

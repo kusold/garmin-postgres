@@ -93,7 +93,7 @@ def test_user_run_filters_by_id_and_dates_but_replays_record_snapshot(session, m
     assert [results[k]["rows"] for k in results] == [1, 1, 1]
     assert [results[k]["created"] for k in results] == [1, 1, 1]
     assert client.pages.create.call_count == 3
-    assert client.pages.create.call_args_list[0].kwargs["properties"]["Value"]["rich_text"][0]["text"]["content"] == "12"
+    assert client.pages.create.call_args_list[0].kwargs["properties"]["Value"]["rich_text"][0]["text"]["content"] == "12 days"
     assert options[0][0] == "secret"
     assert options[0][1].max_retries == 5
 
@@ -187,7 +187,7 @@ def test_personal_record_snapshot_replays_latest_value(session, monkeypatch):
     assert result["updated"] == 1
     assert client.databases.retrieve.call_count == 1
     updated = client.pages.update.call_args.kwargs["properties"]
-    assert updated["Value"]["rich_text"][0]["text"]["content"] == "1334"
+    assert updated["Value"]["rich_text"][0]["text"]["content"] == "22:14"
 
 
 def test_user_run_continues_after_one_row_fails(session, monkeypatch):

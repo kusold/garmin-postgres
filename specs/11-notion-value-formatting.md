@@ -5,20 +5,23 @@
 Make the values synced to Notion readable by humans. Personal-record pages
 currently show Garmin's raw numbers (`9876.0` for a marathon), and activity
 durations show decimal minutes (`62.35`). Formatting happens in notion-sync
-before pushing; activities additionally switch to imperial units (miles,
-min/mi). Personal records stay metric.
+before pushing for personal-record values and a new duration text property.
+Existing activity and daily-step measurements stay metric; the client handles
+the presentation of those numeric columns and any unit conversion.
 
 ## Background
 
-The Notion API offers no way to render these values after the fact: number
-properties support only comma / percent / currency display formats, and
-formula properties cannot be written via the API at all (they must be
-hand-built in the Notion UI). So the only workable approach is to format
-values into strings before pushing — the same approach used by the reference
-project [kburgert/garmin-to-notion](https://github.com/kburgert/garmin-to-notion),
-whose `format_garmin_value(value, type, typeId)` maps each record type to a
-human string (`h:mm:ss` durations, `42.19 km`, `265 W`, comma-grouped steps,
-`X days` streaks).
+Notion number display formats do not express duration strings, unit suffixes,
+or decimal-place rounding. Notion formulas can round values, but this spec
+does not add formula properties.
+Formula page values are read-only, though formula properties can be managed in
+the data-source schema. This spec formats the existing personal-record text
+property and adds one activity text property before pushing. The reference
+project [kburgert/garmin-to-notion](https://github.com/kburgert/garmin-to-notion)
+uses the same approach; its `format_garmin_value(value, type, typeId)` formats
+known record types as durations, distances, power, steps, or streaks, with a
+generic duration fallback. It excludes daily-streak records (type 16). This
+spec explicitly covers types 5, 6, 11, and 16 as well.
 
 All formatting lives in `notion_sync/formatters.py`, which already holds
 `format_pace`, `format_record_pace`, and the type-ID lookup tables. This
@@ -39,7 +42,7 @@ seconds round to whole seconds before formatting.
 | 4 | 10K | `2236.0` | `37:16` |
 | 5 | Half Marathon | `5012.0` | `1:23:32` |
 | 6 | Marathon | `9876.0` | `2:44:36` |
-| 7 | Longest Run | `32165.0` | `32.17 km` |
+| 7 | Longest Run | `32165.0` | `32.16 km` |
 | 8 | Longest Ride | `73540.0` | `73.54 km` |
 | 9 | Total Ascent | `1234.0` | `1,234 m` |
 | 10 | Max Avg Power (20 min) | `265.0` | `265 W` |
@@ -55,19 +58,22 @@ Durations use `m:ss` under an hour and `h:mm:ss` at or above.
 reads wrongly for rides. Distance-type, step, streak, and unknown records
 keep a blank pace.
 
-## Activities (imperial)
+Already-formatted, nonnumeric duration values (for example `00:22:14`) remain
+unchanged in `Value` and have a blank derived `Pace`. Parsing those values for
+pace can be added if they occur in real archived records.
+
+## Activities (metric)
 
 `activity_page` changes:
 
-- `Distance (km)` becomes `Distance (mi)` — meters / 1609.344, rounded to
-  2 decimals.
-- `Avg Pace` becomes minutes per mile — `1609.344 / (m/s × 60)` rendered in
-  the existing `m:ss min/mi` shape.
 - `Duration (min)` (number) stays for numeric sorting, and a new `Duration`
   text property carries `format_duration(seconds)` (`1:02:21`).
 
-`daily_steps_page` writes rows into the same database, so its
-`Total Distance (km)` becomes `Total Distance (mi)` for consistency.
+`Distance (km)` and `Avg Pace` keep their current metric values and formats.
+`daily_steps_page` continues to write `Total Distance (km)` to the separate
+daily-steps database. `Avg Pace` remains `min/km` even for cycling activities,
+matching the reference project's activity formatter. Activity-specific pace or
+speed presentation is deferred.
 
 All other activity columns (calories, power in watts, training effect) are
 unit-neutral or already readable and are untouched.
@@ -75,52 +81,61 @@ unit-neutral or already readable and are untouched.
 ## Formatter Functions
 
 - `format_duration(seconds)` — `m:ss` under an hour, `h:mm:ss` at or above;
-  `""` for `None` or ≤ 0; rounds fractional seconds first.
+  `""` for `None` or ≤ 0; uses Python's `round()` on fractional seconds first.
 - `format_record_value(type_id, value_text)` — the PR table above. Reuses
   `format_duration` for types 1–6 and 11. Unknown `type_id` or unparseable
   value falls back to the raw string unchanged so data never disappears
-  (mirroring `format_record_pace`'s degradation).
+  (mirroring `format_record_pace`'s degradation). Distance records divide meters
+  by 1000, use Python's `round(km, 2)`, then display two decimal places; thus
+  `32165.0` meters displays as `32.16 km` with binary floating-point rounding.
 - `format_record_pace` gains a 40 km entry for type 11 and the `km/h` branch.
-- `format_pace` switches to min/mi (activities are its only caller).
+- `format_pace` keeps its current min/km output.
 
 ## One-Time Notion Setup (manual)
 
-The API does not auto-create properties, and `NotionSink` deliberately has no
-schema-management role, so the activities database gets a one-time UI edit:
+`NotionSink` has no schema-management role, so the activities database gets a
+one-time UI edit:
 
 - Add a text property named `Duration`.
-- Rename `Distance (km)` → `Distance (mi)` and
-  `Total Distance (km)` → `Total Distance (mi)` (renaming preserves the
-  properties; values convert on the next sync).
 
-The PR database needs no changes — `Value` and `Pace` are already text
-properties.
+The PR and daily-steps databases need no changes. `Value` and `Pace` in the
+PR database are already text properties.
 
 ## Backfill
 
-None needed. `upsert_page` rewrites the full property set on every matched
-row, so the next `notion-sync run` reformats existing PR, activity, and
-daily-steps pages in place.
+Personal records are replayed as a full snapshot, so the next sync reformats
+their existing pages. Scheduled activity syncs use a two-day date window; to
+populate `Duration` on older activity pages, run a one-time full-history sync
+for each configured user without date limits, for example
+`uv run notion-sync run --user <display-name> --data-type activities`.
+`upsert_page` updates each matched page in place. Daily-steps pages need no
+backfill because their values are unchanged.
 
 ## Error Handling
 
-Formatters are total functions: `None`/≤0 durations yield `""`, unknown PR
-types and unparseable values yield the raw string. No exception from
-formatting can abort a sync.
+Formatters accept missing, invalid, and non-finite numeric inputs without
+raising. `None`/≤0/non-finite durations yield `""`; unknown PR types and
+unparseable or non-finite values preserve the raw string. Invalid values yield
+a blank pace. A formatting error must not cause a row to be skipped.
 
 ## Testing
 
-- `format_duration`: sub-hour, hour-and-up, fractional seconds, `None`, ≤ 0.
+- `format_duration`: sub-hour, hour-and-up, fractional seconds, `None`, ≤ 0,
+  non-finite and invalid inputs.
 - `format_record_value`: one case per type family (duration, distance, ascent,
-  power, steps, streak), unknown-type fallback, unparseable-value fallback.
-- `format_record_pace` type 11 → `km/h`; types 1–6 unchanged.
-- Mapper assertions: `activity_page` emits `Duration` text, `Distance (mi)`,
-  min/mi pace, and keeps `Duration (min)`; `personal_record_page` emits the
-  formatted `Value`; `daily_steps_page` emits `Total Distance (mi)`.
+  power, steps, streak), unknown-type fallback, unparseable and non-finite
+  value fallback, and the `32165.0`-meter rounding case.
+- `format_record_pace` type 11 → `km/h`; types 1–6 unchanged; invalid and
+  non-finite values yield blank pace; preformatted duration text preserves
+  `Value` but yields blank pace.
+- Mapper assertions: `activity_page` emits `Duration` text and keeps
+  `Distance (km)`, min/km pace, and `Duration (min)`; `personal_record_page`
+  emits the formatted `Value`; `daily_steps_page` keeps `Total Distance (km)`.
 
 ## Out of Scope
 
 - Notion formula properties or API-side schema management.
 - Any ingest, parser, or database schema change (Notion sync stays
   Postgres-only).
-- PR units (stay metric) and activity power/calories (unit-neutral).
+- Unit conversion in notion-sync. Activity distances and paces, daily-step
+  distances, and PR units stay metric.

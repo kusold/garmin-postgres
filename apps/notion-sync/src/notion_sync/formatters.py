@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import math
 from typing import Any
 
 
@@ -49,9 +50,9 @@ PERSONAL_RECORD_NAMES = {
 }
 
 
-# Race distances in km for duration-type records (value is seconds), used to
-# derive pace. Distance-type records (longest run/ride, steps, streaks) and
-# unknown types have no derivable pace.
+# Distances in km for timed records (value is seconds), used to derive running
+# pace or 40 km cycling speed. Distance, step, streak, and unknown records have
+# no derivable pace.
 PERSONAL_RECORD_DISTANCES_KM = {
     1: 1.0,
     2: 1.609344,
@@ -59,19 +60,61 @@ PERSONAL_RECORD_DISTANCES_KM = {
     4: 10.0,
     5: 21.0975,
     6: 42.195,
+    11: 40.0,
 }
+
+
+def _finite_number(value: Any) -> float | None:
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def format_duration(seconds: Any) -> str:
+    total_seconds = _finite_number(seconds)
+    if total_seconds is None or total_seconds <= 0:
+        return ""
+    minutes, remaining_seconds = divmod(round(total_seconds), 60)
+    if minutes >= 60:
+        hours, remaining_minutes = divmod(minutes, 60)
+        return f"{hours}:{remaining_minutes:02d}:{remaining_seconds:02d}"
+    return f"{minutes}:{remaining_seconds:02d}"
+
+
+def format_record_value(type_id: int, value_text: str | None) -> str:
+    raw_value = value_text if value_text is not None else ""
+    if type_id not in PERSONAL_RECORD_NAMES:
+        return raw_value
+    value = _finite_number(value_text)
+    if value is None:
+        return raw_value
+    if type_id in PERSONAL_RECORD_DISTANCES_KM:
+        return format_duration(value)
+    if type_id in (7, 8):
+        return f"{round(value / 1000, 2):.2f} km"
+    if type_id == 9:
+        return f"{round(value):,} m"
+    if type_id == 10:
+        return f"{round(value):,} W"
+    if type_id in (12, 13, 14):
+        return f"{round(value):,}"
+    if type_id in (15, 16):
+        return f"{round(value):,} days"
+    return raw_value
 
 
 def format_record_pace(type_id: int, value_text: str | None) -> str:
     distance = PERSONAL_RECORD_DISTANCES_KM.get(type_id)
     if not distance or not value_text:
         return ""
-    try:
-        total_seconds = float(value_text)
-    except ValueError:
+    total_seconds = _finite_number(value_text)
+    if total_seconds is None or total_seconds <= 0:
         return ""
-    if total_seconds <= 0:
-        return ""
+    if type_id == 11:
+        speed_kmh = distance * 3600 / total_seconds
+        return f"{speed_kmh:.1f} km/h" if math.isfinite(speed_kmh) else ""
     pace_min_km = total_seconds / 60 / distance
     minutes = int(pace_min_km)
     seconds = int((pace_min_km - minutes) * 60)
