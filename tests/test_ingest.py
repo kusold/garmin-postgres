@@ -458,6 +458,8 @@ class TestRunIngestionActivityDetails:
             "errors": 0,
             "detail_rows": 1,
             "detail_errors": 0,
+            "file_rows": 1,
+            "file_errors": 0,
         }
         assert calls == [
             ("summary", "10001"),
@@ -510,9 +512,11 @@ class TestRunIngestionActivityDetails:
         assert result["activities"] == {
             "status": "partial",
             "rows": 1,
-            "errors": 0,
+            "errors": 1,
             "detail_rows": 0,
             "detail_errors": 1,
+            "file_rows": 1,
+            "file_errors": 0,
         }
 
     def test_activity_detail_fetch_failure_falls_back_to_summary(self, session, monkeypatch):
@@ -565,6 +569,8 @@ class TestRunIngestionActivityDetails:
             "errors": 0,
             "detail_rows": 1,
             "detail_errors": 0,
+            "file_rows": 1,
+            "file_errors": 0,
         }
 
     def test_dry_run_fetches_details_without_writing_rows(self, session, monkeypatch):
@@ -614,6 +620,50 @@ class TestRunIngestionActivityDetails:
 
 
 class TestSplitActivityRunners:
+    def test_direct_activity_run_reports_file_failure(self, monkeypatch):
+        session = MagicMock()
+        user = User(id=7, garmin_display_name="testuser")
+        client = MagicMock()
+        client.get_activity.return_value = {"activityId": 10007}
+
+        monkeypatch.setattr(
+            runners,
+            "_session_scope",
+            lambda session=None: nullcontext(session),
+        )
+        monkeypatch.setattr(runners, "_get_user", lambda session, user_id: user)
+        monkeypatch.setattr(runners, "_client_for_user", lambda session, user: client)
+        monkeypatch.setattr(runners, "upsert_activity", lambda session, activity: activity)
+        monkeypatch.setattr(
+            runners,
+            "_fetch_and_store_activity_detail",
+            lambda *args, **kwargs: True,
+        )
+        file_download = MagicMock(return_value=False)
+        monkeypatch.setattr(runners, "_download_and_store_file", file_download)
+        monkeypatch.setattr(
+            runners,
+            "_save_tokens_and_mark_ingested",
+            lambda *args, **kwargs: None,
+        )
+
+        result = runners.ingest_activity(
+            user_id=7,
+            activity_id=10007,
+            session=session,
+        )
+
+        assert result.as_dict() == {
+            "status": "partial",
+            "rows": 1,
+            "errors": 1,
+            "detail_rows": 1,
+            "detail_errors": 0,
+            "file_rows": 0,
+            "file_errors": 1,
+        }
+        file_download.assert_called_once()
+
     def test_detail_and_file_are_independently_persisted(
         self,
         monkeypatch,

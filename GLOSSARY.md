@@ -4,6 +4,9 @@ Terms for the archived Garmin data and its per-user Notion destination.
 
 ## Language
 
+**Activity archive run**:
+One attempt to archive a Garmin activity for a user, including its activity row and any selected detail or original file.
+
 **Notion sync target**:
 The Notion destination configured for one Garmin user, including its integration token and database IDs.
 

@@ -18,6 +18,11 @@ from garmin_postgres.models.daily_summary import DailySummary
 from garmin_postgres.models.personal_record import PersonalRecord
 from garmin_postgres.models.user import User
 from garmin_sync.auth import load_user_client, save_tokens
+from garmin_sync.ingest.activity_run import (
+    ActivityArchiveRun,
+    ActivityStep,
+    activity_step_result,
+)
 from garmin_sync.ingest.client import GarminClient
 from garmin_sync.ingest.date_windows import iter_dates
 from garmin_sync.ingest.object_registry import (
@@ -564,9 +569,7 @@ def ingest_activity(
     raise_on_error: bool = False,
 ) -> IngestResult:
     with _session_scope(session) as current_session:
-        detail_rows = 0
-        detail_errors = 0
-        file_failed = False
+        result: IngestResult | None = None
         try:
             user = _get_user(current_session, user_id)
             client = _client_for_user(current_session, user)
@@ -594,23 +597,37 @@ def ingest_activity(
             if not dry_run:
                 upsert_activity(current_session, activity)
 
-            if include_details:
-                if _fetch_and_store_activity_detail(
-                    current_session,
-                    client,
-                    activity,
-                    dry_run=dry_run,
-                ):
-                    detail_rows += 1
-                else:
-                    detail_errors += 1
+            run = ActivityArchiveRun(
+                dry_run=dry_run,
+                include_details=include_details,
+                include_files=include_files,
+            )
 
-            if include_files and not dry_run:
-                file_failed = not _download_and_store_file(
+            def execute_step(step: ActivityStep) -> IngestResult:
+                if step == "detail":
+                    succeeded = _fetch_and_store_activity_detail(
+                        current_session,
+                        client,
+                        activity,
+                        dry_run=dry_run,
+                    )
+                    return activity_step_result(step, succeeded=succeeded)
+
+                succeeded = _download_and_store_file(
                     current_session,
                     client,
                     activity,
                 )
+                return activity_step_result(step, succeeded=succeeded)
+
+            result = run.complete(
+                IngestResult.success(
+                    ACTIVITIES,
+                    rows=1,
+                    metrics={"detail_rows": 0, "detail_errors": 0},
+                ),
+                execute_step,
+            )
 
             _save_tokens_and_mark_ingested(
                 current_session,
@@ -619,23 +636,13 @@ def ingest_activity(
                 dry_run=dry_run,
             )
 
-            status = "partial" if detail_errors or file_failed else "success"
             logger.debug(
                 "Ingested activity %s (%s) for user %s",
                 activity.activity_id,
                 activity.activity_type,
                 user.garmin_display_name,
             )
-            return IngestResult(
-                data_type=ACTIVITIES,
-                status=status,
-                rows=1,
-                errors=0,
-                metrics={
-                    "detail_rows": detail_rows,
-                    "detail_errors": detail_errors,
-                },
-            )
+            return result
         except Exception as e:
             current_session.rollback()
             if raise_on_error:
@@ -649,7 +656,11 @@ def ingest_activity(
             return IngestResult.error_result(
                 ACTIVITIES,
                 error=str(e),
-                metrics={"detail_rows": detail_rows, "detail_errors": detail_errors},
+                metrics=(
+                    result.metrics
+                    if result is not None
+                    else {"detail_rows": 0, "detail_errors": 0}
+                ),
             )
 
 

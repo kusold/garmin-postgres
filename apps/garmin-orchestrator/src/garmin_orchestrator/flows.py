@@ -11,6 +11,11 @@ from prefect.context import FlowRunContext
 from prefect.deployments import run_deployment
 from prefect.exceptions import MissingContextError
 
+from garmin_sync.ingest.activity_run import (
+    ActivityArchiveRun,
+    ActivityStep,
+    activity_step_result,
+)
 from garmin_sync.ingest.date_windows import iter_dates
 from garmin_sync.ingest.object_registry import (
     ACTIVITIES,
@@ -278,6 +283,11 @@ def garmin_archive_user_flow(
         )
 
     if ACTIVITIES in data_types:
+        activity_run = ActivityArchiveRun(
+            dry_run=dry_run,
+            include_details=include_details,
+            include_files=include_files,
+        )
         run_logger.info(
             "Listing activity summaries for user=%s window=%s..%s",
             user_ref["display_name"],
@@ -337,7 +347,8 @@ def garmin_archive_user_flow(
                     activity_summary=activity_summary,
                     return_state=True,
                 )
-                activity_parts = [
+                summary_result = _dict_to_ingest_result(
+                    ACTIVITIES,
                     _task_state_result(
                         summary_state,
                         data_type=ACTIVITIES,
@@ -347,44 +358,33 @@ def garmin_archive_user_flow(
                             "file_rows": 0,
                             "file_errors": 0,
                         },
-                    )
-                ]
-                if activity_parts[0]["status"] == "success":
-                    if include_details:
+                    ),
+                )
+
+                def execute_step(step: ActivityStep) -> IngestResult:
+                    if step == "detail":
                         detail_state = ingest_activity_detail_task(
                             user_id=user_id,
                             activity_id=activity_id,
                             dry_run=dry_run,
                             return_state=True,
                         )
-                        activity_parts.append(
-                            _task_state_result(
-                                detail_state,
-                                data_type=ACTIVITIES,
-                                failure_metrics={
-                                    "detail_rows": 0,
-                                    "detail_errors": 1,
-                                },
-                            )
-                        )
-
-                    if include_files and not dry_run:
-                        file_state = ingest_activity_file_task(
+                        state = detail_state
+                    else:
+                        state = ingest_activity_file_task(
                             user_id=user_id,
                             activity_id=activity_id,
                             dry_run=dry_run,
                             return_state=True,
                         )
-                        activity_parts.append(
-                            _task_state_result(
-                                file_state,
-                                data_type=ACTIVITIES,
-                                failure_metrics={"file_rows": 0, "file_errors": 1},
-                            )
-                        )
+
+                    if state.is_completed():
+                        return _dict_to_ingest_result(ACTIVITIES, state.result())
+                    error = state.result(raise_on_failure=False)
+                    return activity_step_result(step, succeeded=False, error=str(error))
 
                 activity_results.append(
-                    _aggregate_result_dicts(ACTIVITIES, activity_parts)
+                    activity_run.complete(summary_result, execute_step).as_dict()
                 )
         result[ACTIVITIES] = _aggregate_result_dicts(ACTIVITIES, activity_results)
         run_logger.info(
