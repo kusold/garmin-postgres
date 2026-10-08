@@ -15,13 +15,21 @@ from notion_sync.formatters import (
     format_record_pace,
     format_record_value,
 )
-from notion_sync.mappers import activity_page, daily_steps_page, personal_record_page
+from notion_sync.mappers import (
+    PROTECTED_ACTIVITY_PROPERTIES,
+    activity_page,
+    daily_steps_page,
+    personal_record_page,
+)
 from notion_sync.notion import NotionSink
 from notion_sync.sync import (
     _apply_date_window,
     _apply_datetime_window,
     _current_streak_per_user,
+    sync_activities,
+    sync_daily_steps,
 )
+from notion_sync.updates import plan_update
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -546,6 +554,354 @@ def test_notion_sink_rejects_database_with_no_data_sources():
     with pytest.raises(ValueError, match="no data sources"):
         sink.upsert_page("db", filter_payload={"property": "Name"}, properties={"Name": {}})
     assert client.pages.created == []
+
+
+# Minimal-update planning: diff the payload against the queried page
+
+def _activity():
+    return Activity(
+        user_id=1,
+        activity_id=12345,
+        activity_type="running",
+        start_time=datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc),
+        raw_json={
+            "activityId": 12345,
+            "activityName": "Morning Run",
+            "activityTypeDTO": {"typeId": 1, "typeKey": "running"},
+            "distance": 5000,
+            "duration": 1800,
+            "calories": 321,
+        },
+    )
+
+
+def _activity_payload():
+    return activity_page(_activity())
+
+
+def _existing_page(properties, icon=None, page_id="page-1"):
+    """Build a page in the shape Notion returns, from a mapper payload.
+
+    Selects gain the id/color keys and dates the end/time_zone keys Notion
+    adds, so fixtures exercise the real return shape rather than ours.
+    """
+    current = {}
+    for name, prop in properties.items():
+        if "number" in prop:
+            current[name] = {"type": "number", "number": prop["number"]}
+        elif "checkbox" in prop:
+            current[name] = {"type": "checkbox", "checkbox": prop["checkbox"]}
+        elif "select" in prop:
+            select = prop["select"]
+            current[name] = {
+                "type": "select",
+                "select": None
+                if select is None
+                else {"id": "sel-1", "name": select["name"], "color": "default"},
+            }
+        elif "title" in prop:
+            current[name] = {
+                "type": "title",
+                "title": [{"plain_text": prop["title"][0]["text"]["content"]}],
+            }
+        elif "rich_text" in prop:
+            current[name] = {
+                "type": "rich_text",
+                "rich_text": [{"plain_text": prop["rich_text"][0]["text"]["content"]}],
+            }
+        elif "date" in prop:
+            start = prop["date"]["start"]
+            current[name] = {
+                "type": "date",
+                "date": None
+                if start is None
+                else {"start": start, "end": None, "time_zone": None},
+            }
+    page = {"id": page_id, "properties": current}
+    if icon is not None:
+        page["icon"] = icon
+    return page
+
+
+def test_plan_update_is_noop_when_page_matches_payload():
+    properties, _, icon = _activity_payload()
+
+    changed, icon_out, action = plan_update(
+        _existing_page(properties, icon=icon),
+        properties,
+        icon=icon,
+        protected=PROTECTED_ACTIVITY_PROPERTIES,
+    )
+
+    assert action == "unchanged"
+    assert changed == {}
+    assert icon_out is None
+
+
+def test_plan_update_sends_only_differing_unprotected_property():
+    properties, _, icon = _activity_payload()
+    page = _existing_page(properties, icon=icon)
+    page["properties"]["Calories"]["number"] = 400
+
+    changed, icon_out, action = plan_update(
+        page, properties, icon=icon, protected=PROTECTED_ACTIVITY_PROPERTIES
+    )
+
+    assert action == "updated"
+    assert list(changed) == ["Calories"]
+    assert changed["Calories"] == properties["Calories"]
+    assert icon_out is None
+
+
+def test_plan_update_preserves_human_edited_protected_property():
+    """A protected property that differs from the payload is left alone —
+    the same rule keeps a Garmin-side rename out of Notion."""
+    properties, _, icon = _activity_payload()
+    page = _existing_page(properties, icon=icon)
+    page["properties"]["Activity Name"]["title"][0]["plain_text"] = "Katie's Title"
+
+    changed, _, action = plan_update(
+        page, properties, icon=icon, protected=PROTECTED_ACTIVITY_PROPERTIES
+    )
+
+    assert action == "unchanged"
+    assert changed == {}
+
+
+def test_plan_update_drops_edited_protected_property_but_updates_the_rest():
+    properties, _, icon = _activity_payload()
+    page = _existing_page(properties, icon=icon)
+    page["properties"]["Activity Name"]["title"][0]["plain_text"] = "Katie's Title"
+    page["properties"]["Calories"]["number"] = 400
+
+    changed, _, action = plan_update(
+        page, properties, icon=icon, protected=PROTECTED_ACTIVITY_PROPERTIES
+    )
+
+    assert action == "updated"
+    assert "Activity Name" not in changed
+    assert list(changed) == ["Calories"]
+
+
+def test_plan_update_never_overwrites_differing_activity_icon():
+    properties, _, icon = _activity_payload()
+    page = _existing_page(properties, icon={"type": "emoji", "emoji": "👑"})
+
+    _, icon_out, action = plan_update(
+        page, properties, icon=icon, protected=PROTECTED_ACTIVITY_PROPERTIES
+    )
+
+    assert action == "unchanged"
+    assert icon_out is None
+
+
+def test_plan_update_fills_missing_activity_icon():
+    properties, _, icon = _activity_payload()
+    page = _existing_page(properties)  # no icon on the page yet
+
+    _, icon_out, action = plan_update(
+        page, properties, icon=icon, protected=PROTECTED_ACTIVITY_PROPERTIES
+    )
+
+    assert action == "updated"
+    assert icon_out == icon
+
+
+def test_plan_update_refreshes_differing_icon_without_protected_properties():
+    """Daily steps and personal records have no protected properties, so a
+    drifted icon is refreshed rather than preserved."""
+    properties, _, icon = _activity_payload()
+    page = _existing_page(properties, icon={"type": "emoji", "emoji": "👑"})
+
+    _, icon_out, action = plan_update(page, properties, icon=icon)
+
+    assert action == "updated"
+    assert icon_out == icon
+
+
+def test_plan_update_treats_date_iso_variants_as_equal():
+    properties = {"Date": {"date": {"start": "2026-06-20T14:26:41+00:00"}}}
+    for start in (
+        "2026-06-20T14:26:41+00:00",
+        "2026-06-20T14:26:41.000Z",
+        "2026-06-20",  # Notion may drop the time part
+    ):
+        page = _existing_page(properties)
+        page["properties"]["Date"]["date"]["start"] = start
+
+        changed, _, action = plan_update(page, properties)
+
+        assert (changed, action) == ({}, "unchanged"), start
+
+
+def test_plan_update_detects_different_date():
+    properties = {"Date": {"date": {"start": "2026-06-20T14:26:41+00:00"}}}
+    page = _existing_page(properties)
+    page["properties"]["Date"]["date"]["start"] = "2026-06-21T14:26:41Z"
+
+    changed, _, action = plan_update(page, properties)
+
+    assert action == "updated"
+    assert list(changed) == ["Date"]
+
+
+def test_notion_sink_skips_update_when_page_is_unchanged():
+    properties, filter_payload, icon = _activity_payload()
+    client = FakeNotionClient(results=[_existing_page(properties, icon=icon)])
+    sink = NotionSink(client, min_interval=0.0)
+
+    action = sink.upsert_page(
+        "db",
+        filter_payload=filter_payload,
+        properties=properties,
+        icon=icon,
+        protected=PROTECTED_ACTIVITY_PROPERTIES,
+    )
+
+    assert action == "unchanged"
+    assert client.pages.created == []
+    assert client.pages.updated == []
+
+
+def test_notion_sink_updates_cover_when_other_values_are_unchanged():
+    properties, filter_payload, icon = _activity_payload()
+    page = _existing_page(properties, icon=icon)
+    page["cover"] = {"type": "external", "external": {"url": "https://example.com/old.png"}}
+    cover = {"type": "external", "external": {"url": "https://example.com/new.png"}}
+    client = FakeNotionClient(results=[page])
+    sink = NotionSink(client, min_interval=0.0)
+
+    action = sink.upsert_page(
+        "db",
+        filter_payload=filter_payload,
+        properties=properties,
+        icon=icon,
+        cover=cover,
+        protected=PROTECTED_ACTIVITY_PROPERTIES,
+    )
+
+    assert action == "updated"
+    assert client.pages.updated == [
+        {"page_id": "page-1", "properties": {}, "cover": cover}
+    ]
+
+
+def test_notion_sink_skips_update_when_cover_already_matches():
+    properties, filter_payload, icon = _activity_payload()
+    cover = {"type": "external", "external": {"url": "https://example.com/cover.png"}}
+    page = _existing_page(properties, icon=icon)
+    page["cover"] = cover
+    client = FakeNotionClient(results=[page])
+    sink = NotionSink(client, min_interval=0.0)
+
+    action = sink.upsert_page(
+        "db",
+        filter_payload=filter_payload,
+        properties=properties,
+        icon=icon,
+        cover=cover,
+        protected=PROTECTED_ACTIVITY_PROPERTIES,
+    )
+
+    assert action == "unchanged"
+    assert client.pages.updated == []
+
+
+def test_notion_sink_preserves_user_edited_activity_name():
+    properties, filter_payload, icon = _activity_payload()
+    page = _existing_page(properties, icon=icon)
+    page["properties"]["Activity Name"]["title"][0]["plain_text"] = "Katie's Title"
+    client = FakeNotionClient(results=[page])
+    sink = NotionSink(client, min_interval=0.0)
+
+    action = sink.upsert_page(
+        "db",
+        filter_payload=filter_payload,
+        properties=properties,
+        icon=icon,
+        protected=PROTECTED_ACTIVITY_PROPERTIES,
+    )
+
+    assert action == "unchanged"
+    assert client.pages.updated == []
+
+
+def test_notion_sink_updates_only_changed_property():
+    properties, filter_payload, icon = _activity_payload()
+    page = _existing_page(properties, icon=icon)
+    page["properties"]["Calories"]["number"] = 400
+    client = FakeNotionClient(results=[page])
+    sink = NotionSink(client, min_interval=0.0)
+
+    action = sink.upsert_page(
+        "db",
+        filter_payload=filter_payload,
+        properties=properties,
+        icon=icon,
+        protected=PROTECTED_ACTIVITY_PROPERTIES,
+    )
+
+    assert action == "updated"
+    assert client.pages.updated[0]["page_id"] == "page-1"
+    assert client.pages.updated[0]["properties"].keys() == {"Calories"}
+    assert "icon" not in client.pages.updated[0]
+
+
+class _ScalarsSession:
+    """Minimal Session stand-in: ``scalars`` ignores the statement."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def scalars(self, stmt):
+        return FakeScalarResult(self._rows)
+
+
+class _RecordingSink:
+    """Sink stand-in that records the protection sets it receives."""
+
+    def __init__(self, action):
+        self.action = action
+        self.calls = []
+
+    def upsert_page(
+        self,
+        database_id,
+        *,
+        filter_payload,
+        properties,
+        icon=None,
+        protected=frozenset(),
+    ):
+        self.calls.append(protected)
+        return self.action
+
+
+def test_sync_activities_passes_protected_properties_and_counts_unchanged():
+    sink = _RecordingSink("unchanged")
+    session = _ScalarsSession([_activity()])
+
+    result = sync_activities(session, sink, "db", user_id=1)
+
+    assert sink.calls == [PROTECTED_ACTIVITY_PROPERTIES]
+    assert result.rows == 1
+    assert result.unchanged == 1
+    assert result.updated == 0
+
+
+def test_sync_daily_steps_passes_no_protected_properties():
+    summary = DailySummary(
+        user_id=1,
+        calendar_date=date(2026, 6, 1),
+        raw_json={"totalSteps": 8432, "dailyStepGoal": 10000, "totalDistanceMeters": 6200},
+    )
+    sink = _RecordingSink("unchanged")
+    session = _ScalarsSession([summary])
+
+    result = sync_daily_steps(session, sink, "db", user_id=1)
+
+    assert sink.calls == [frozenset()]
+    assert result.unchanged == 1
 
 
 def test_notion_sync_run_requires_user():

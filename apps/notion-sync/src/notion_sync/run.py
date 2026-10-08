@@ -1,5 +1,6 @@
 """One user's Notion sync run, shared by the CLI and Prefect adapters."""
 
+from collections.abc import Collection
 from datetime import date
 
 from notion_client import Client, RetryOptions
@@ -22,6 +23,7 @@ class _DatabasePreviewSink:
         filter_payload: dict,
         properties: dict,
         icon: dict | None = None,
+        protected: Collection[str] = frozenset(),
     ) -> str:
         return "dry_run"
 

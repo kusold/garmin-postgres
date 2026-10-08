@@ -1,5 +1,5 @@
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Protocol
@@ -11,7 +11,12 @@ from garmin_postgres.models.activity import Activity
 from garmin_postgres.models.daily_summary import DailySummary
 from garmin_postgres.models.personal_record import PersonalRecord
 from notion_sync.formatters import DAILY_STREAK_TYPE_ID
-from notion_sync.mappers import activity_page, daily_steps_page, personal_record_page
+from notion_sync.mappers import (
+    PROTECTED_ACTIVITY_PROPERTIES,
+    activity_page,
+    daily_steps_page,
+    personal_record_page,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +32,7 @@ class _PageSink(Protocol):
         filter_payload: dict,
         properties: dict,
         icon: dict | None = None,
+        protected: Collection[str] = frozenset(),
     ) -> str: ...
 
 
@@ -36,6 +42,7 @@ class SyncResult:
     rows: int = 0
     created: int = 0
     updated: int = 0
+    unchanged: int = 0
     skipped: int = 0
     errors: int = 0
     error: str | None = None
@@ -46,6 +53,7 @@ class SyncResult:
             "rows": self.rows,
             "created": self.created,
             "updated": self.updated,
+            "unchanged": self.unchanged,
             "skipped": self.skipped,
             "errors": self.errors,
         }
@@ -141,6 +149,7 @@ def _sync_table(
     end_date: date | None = None,
     user_id: int | None = None,
     row_filter: Callable[[list], list] | None = None,
+    protected_properties: Collection[str] = frozenset(),
 ) -> SyncResult:
     if not database_id:
         return SyncResult(
@@ -157,7 +166,7 @@ def _sync_table(
     if row_filter is not None:
         records = row_filter(records)
 
-    rows = created = updated = errors = 0
+    rows = created = updated = unchanged = errors = 0
     for row in records:
         rows += 1
         try:
@@ -167,11 +176,14 @@ def _sync_table(
                 filter_payload=filter_payload,
                 properties=properties,
                 icon=icon,
+                protected=protected_properties,
             )
             if action == "created":
                 created += 1
             elif action == "updated":
                 updated += 1
+            elif action == "unchanged":
+                unchanged += 1
         except Exception:
             logger.exception(
                 "Failed to sync %s id=%s",
@@ -184,6 +196,7 @@ def _sync_table(
         rows=rows,
         created=created,
         updated=updated,
+        unchanged=unchanged,
         errors=errors,
     )
 
@@ -209,6 +222,7 @@ def sync_activities(
         start_date=start_date,
         end_date=end_date,
         user_id=user_id,
+        protected_properties=PROTECTED_ACTIVITY_PROPERTIES,
     )
 
 
