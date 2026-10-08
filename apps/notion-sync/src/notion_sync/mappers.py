@@ -3,7 +3,8 @@ from garmin_postgres.models.daily_summary import DailySummary
 from garmin_postgres.models.personal_record import PersonalRecord
 
 from notion_sync.formatters import (
-    ACTIVITY_ICONS,
+    ACTIVITY_EMOJIS,
+    PERSONAL_RECORD_EMOJIS,
     PERSONAL_RECORD_NAMES,
     format_activity_type,
     format_duration,
@@ -29,6 +30,10 @@ def _metric(raw: dict, key: str):
 def _metadata(raw: dict) -> dict:
     value = raw.get("metadataDTO")
     return value if isinstance(value, dict) else {}
+
+
+def _emoji_icon(emoji: str | None) -> dict | None:
+    return {"type": "emoji", "emoji": emoji} if emoji else None
 
 
 def activity_filter(activity: Activity, activity_name: str, activity_type: str) -> dict:
@@ -90,9 +95,8 @@ def activity_page(activity: Activity) -> tuple[dict, dict, dict | None]:
         "Fav": {"checkbox": bool(raw.get("favorite") or metadata.get("favorite", False))},
     }
 
-    icon_url = ACTIVITY_ICONS.get(activity_subtype if activity_subtype != activity_type else activity_type)
-    icon = {"type": "external", "external": {"url": icon_url}} if icon_url else None
-    return properties, activity_filter(activity, activity_name, activity_type), icon
+    emoji = ACTIVITY_EMOJIS.get(activity_subtype if activity_subtype != activity_type else activity_type)
+    return properties, activity_filter(activity, activity_name, activity_type), _emoji_icon(emoji)
 
 
 def daily_steps_page(summary: DailySummary) -> tuple[dict, dict, dict | None]:
@@ -111,7 +115,7 @@ def daily_steps_page(summary: DailySummary) -> tuple[dict, dict, dict | None]:
             {"property": "Activity Type", "title": {"equals": "Walking"}},
         ]
     }
-    return properties, filter_payload, None
+    return properties, filter_payload, _emoji_icon(ACTIVITY_EMOJIS["Walking"])
 
 
 def personal_record_name(record: PersonalRecord) -> str:
@@ -138,4 +142,4 @@ def personal_record_page(record: PersonalRecord) -> tuple[dict, dict, dict | Non
         "property": "typeId",
         "number": {"equals": record.type_id},
     }
-    return properties, filter_payload, None
+    return properties, filter_payload, _emoji_icon(PERSONAL_RECORD_EMOJIS.get(record.type_id))

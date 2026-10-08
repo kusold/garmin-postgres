@@ -3,25 +3,37 @@ import math
 from typing import Any
 
 
-ACTIVITY_ICONS = {
-    "Barre": "https://img.icons8.com/?size=100&id=66924&format=png&color=000000",
-    "Breathwork": "https://img.icons8.com/?size=100&id=9798&format=png&color=000000",
-    "Cardio": "https://img.icons8.com/?size=100&id=71221&format=png&color=000000",
-    "Cycling": "https://img.icons8.com/?size=100&id=47443&format=png&color=000000",
-    "Hiking": "https://img.icons8.com/?size=100&id=9844&format=png&color=000000",
-    "Indoor Cardio": "https://img.icons8.com/?size=100&id=62779&format=png&color=000000",
-    "Indoor Cycling": "https://img.icons8.com/?size=100&id=47443&format=png&color=000000",
-    "Indoor Rowing": "https://img.icons8.com/?size=100&id=71098&format=png&color=000000",
-    "Pilates": "https://img.icons8.com/?size=100&id=9774&format=png&color=000000",
-    "Meditation": "https://img.icons8.com/?size=100&id=9798&format=png&color=000000",
-    "Rowing": "https://img.icons8.com/?size=100&id=71491&format=png&color=000000",
-    "Running": "https://img.icons8.com/?size=100&id=k1l1XFkME39t&format=png&color=000000",
-    "Strength Training": "https://img.icons8.com/?size=100&id=107640&format=png&color=000000",
-    "Stretching": "https://img.icons8.com/?size=100&id=djfOcRn1m_kh&format=png&color=000000",
-    "Swimming": "https://img.icons8.com/?size=100&id=9777&format=png&color=000000",
-    "Treadmill Running": "https://img.icons8.com/?size=100&id=9794&format=png&color=000000",
-    "Walking": "https://img.icons8.com/?size=100&id=9807&format=png&color=000000",
-    "Yoga": "https://img.icons8.com/?size=100&id=9783&format=png&color=000000",
+# Keys are the formatted type/subtype strings produced by format_activity_type.
+ACTIVITY_EMOJIS = {
+    "Backcountry Skiing": "⛷️",
+    "Backcountry Skiing Snowboarding Ws": "🏂",
+    "Barre": "🩰",
+    "Breathwork": "🌬️",
+    "Cardio": "❤️‍🔥",
+    "Cross Country Skiing Ws": "⛷️",
+    "Cycling": "🚴‍♀️",
+    "Disc Golf": "🥏",
+    "Floor Climbing": "🚶‍♀️",
+    "Gravel Cycling": "🚴‍♀️",
+    "Hiking": "🥾",
+    "Hiit": "🔥",
+    "Indoor Cardio": "❤️‍🔥",
+    "Indoor Cycling": "🚴‍♀️",
+    "Indoor Rowing": "🚣‍♀️",
+    "Meditation": "🧘",
+    "Mountain Biking": "🚵‍♀️",
+    "Pilates": "🧘‍♀️",
+    "Resort Skiing": "⛷️",
+    "Resort Skiing Snowboarding Ws": "🏂",
+    "Rowing": "🚣‍♀️",
+    "Running": "🏃‍♀️",
+    "Strength Training": "🏋️‍♀️",
+    "Stretching": "🤸‍♀️",
+    "Swimming": "🏊‍♀️",
+    "Treadmill Running": "🏃‍♀️",
+    "Virtual Ride": "🚴‍♀️",
+    "Walking": "🚶‍♀️",
+    "Yoga": "🧘‍♀️",
 }
 
 
@@ -47,6 +59,28 @@ PERSONAL_RECORD_NAMES = {
     14: "Most Steps in a Month",
     15: "Longest Goal Streak",
     16: "Daily Streak",
+}
+
+
+# Icons for personal-record pages: run records, ride records, then the one-off
+# ascent/power/step/streak records.
+PERSONAL_RECORD_EMOJIS = {
+    1: "🏃‍♀️",
+    2: "🏃‍♀️",
+    3: "🏃‍♀️",
+    4: "🏃‍♀️",
+    5: "🏃‍♀️",
+    6: "🏃‍♀️",
+    7: "🏃‍♀️",
+    8: "🚴‍♀️",
+    9: "⛰️",
+    10: "⚡",
+    11: "🚴‍♀️",
+    12: "👣",
+    13: "👣",
+    14: "👣",
+    15: "🔥",
+    16: "🔥",
 }
 
 

@@ -386,7 +386,7 @@ def test_daily_steps_page_maps_daily_summary_raw_json():
     assert properties["Step Goal"]["number"] == 10000
     assert properties["Total Distance (km)"]["number"] == 6.2
     assert filter_payload["and"][0]["property"] == "Date"
-    assert icon is None
+    assert icon == {"type": "emoji", "emoji": "🚶‍♀️"}
 
 
 def test_personal_record_page_maps_currently_ingested_personal_records():
@@ -406,7 +406,7 @@ def test_personal_record_page_maps_currently_ingested_personal_records():
     assert properties["Pace"]["rich_text"][0]["text"]["content"] == ""
     assert properties["PR"]["checkbox"] is True
     assert filter_payload == {"property": "typeId", "number": {"equals": 3}}
-    assert icon is None
+    assert icon == {"type": "emoji", "emoji": "🏃‍♀️"}
 
 
 def test_notion_sink_creates_when_no_existing_page():
