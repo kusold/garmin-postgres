@@ -113,11 +113,15 @@ records so the latest record for each Garmin `typeId` wins. An unpinned run
 syncs every active Garmin user that has a `notion` target; the scheduled
 deployment pins a single `user` so the daily run stays deterministic.
 
-For the first sync, provide the earliest archived date to backfill existing
-activities and daily steps:
+For the first sync, start a chunked backfill from the earliest archived date.
+Each run covers at most 180 days and queues the next window. Personal records
+are synced in the first chunk only. Historical activity chunks select by
+activity date; the daily sync continues to pick up recently updated activities.
+The `notion-backfill` deployment must be registered so the flow can queue
+continuations.
 
 ```bash
-uv run garmin-orchestrator run notion-sync \
+uv run garmin-orchestrator run notion-backfill \
   --user your-garmin-display-name \
   --start-date 2020-01-01
 ```

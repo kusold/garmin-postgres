@@ -47,6 +47,7 @@ def run_user_sync(
     start_date: date | None = None,
     end_date: date | None = None,
     dry_run: bool = False,
+    include_updated_activities: bool = True,
 ) -> dict[str, dict]:
     """Sync selected archived data for one active user's Notion target.
 
@@ -84,6 +85,7 @@ def run_user_sync(
                 result = run_sync(
                     session, sink, targets, data_types=selected,
                     start_date=start_date, end_date=end_date, user_id=user_id,
+                    include_updated_activities=include_updated_activities,
                 )
                 if not dry_run:
                     session.commit()
@@ -92,4 +94,5 @@ def run_user_sync(
         return run_sync(
             session, _DatabasePreviewSink(), targets, data_types=selected,
             start_date=start_date, end_date=end_date, user_id=user_id,
+            include_updated_activities=include_updated_activities,
         )

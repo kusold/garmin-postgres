@@ -50,6 +50,7 @@ def sync_notion_user_task(
     start_date: date,
     end_date: date,
     dry_run: bool = False,
+    include_updated_activities: bool = True,
 ) -> dict[str, dict[str, Any]]:
     """Run one user's Notion sync within a Prefect task."""
     run_logger = _get_logger()
@@ -67,6 +68,7 @@ def sync_notion_user_task(
         start_date=start_date,
         end_date=end_date,
         dry_run=dry_run,
+        include_updated_activities=include_updated_activities,
     )
     run_logger.info("Notion sync finished: user_id=%s results=%s", user_id, results)
     return results
