@@ -205,14 +205,17 @@ def list_activity_summaries_task(
     start_date: date,
     end_date: date,
     dry_run: bool = False,
+    scan_archive: bool = False,
 ) -> list[dict[str, Any]]:
     run_logger = _get_logger()
     run_logger.info(
-        "Listing activity summaries: user_id=%s window=%s..%s dry_run=%s",
+        "Listing activity summaries: user_id=%s window=%s..%s dry_run=%s "
+        "scan_archive=%s",
         user_id,
         start_date,
         end_date,
         dry_run,
+        scan_archive,
     )
     try:
         summaries = list_activity_summaries(
@@ -221,6 +224,7 @@ def list_activity_summaries_task(
             end_date=end_date,
             dry_run=dry_run,
             raise_on_error=True,
+            scan_archive=scan_archive,
         )
     except Exception:
         run_logger.exception(

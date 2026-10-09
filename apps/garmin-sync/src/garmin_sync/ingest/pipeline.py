@@ -39,6 +39,7 @@ def run_ingestion(
     data_types: list[str] | None = None,
     include_details: bool = True,
     include_files: bool = True,
+    scan_archive: bool = False,
 ) -> dict:
     """Run ingestion for a single user over a date range.
 
@@ -53,6 +54,7 @@ def run_ingestion(
         include_details=include_details,
         include_files=include_files,
         session=session,
+        scan_archive=scan_archive,
     )
     return summary.as_dict()
 
@@ -76,6 +78,7 @@ def run_for_all_users(
     data_types: list[str] | None = None,
     include_details: bool = True,
     include_files: bool = True,
+    scan_archive: bool = False,
 ) -> list[dict]:
     """Run ingestion for all active users."""
     settings = get_settings()
@@ -109,6 +112,7 @@ def run_for_all_users(
             data_types=data_types,
             include_details=include_details,
             include_files=include_files,
+            scan_archive=scan_archive,
         )
         all_results.append({
             "user": user.garmin_display_name,

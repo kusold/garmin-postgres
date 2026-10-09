@@ -114,6 +114,7 @@ deployments:
       data_types: null
       dry_run: false
       fail_on_partial: false
+      scan_archive: false
       chunk_days: 30
     work_pool: *garmin_backfill
 

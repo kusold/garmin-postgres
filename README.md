@@ -50,9 +50,12 @@ The legacy `garmin-postgres` command remains available as an alias for `garmin-s
 ## Notion Sync
 
 `notion-sync` reads from PostgreSQL only. It does not fetch new Garmin data.
-The Garmin archive scans activity summaries for edits to older names, types,
+The Garmin archive can scan activity summaries for edits to older names, types,
 favorites, and personal-record flags,
-then refreshes changed rows. The Notion sync includes recently refreshed
+then refreshes changed rows. The scan pages through Garmin's full activity
+list, so it is manual-only: pass `--scan-archive` to `garmin-sync ingest`
+commands or `scan_archive: true` to a Prefect flow run. The Notion sync
+includes recently refreshed
 archive rows even when their activity dates are outside its date window.
 Last-written values used to preserve destination edits live in the shared
 `destination_sync_states` table; each destination decides what JSON it stores.

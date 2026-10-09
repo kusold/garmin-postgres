@@ -193,10 +193,11 @@ def test_user_flow_runs_selected_objects_sequentially(monkeypatch):
         start_date,
         end_date,
         dry_run,
+        scan_archive,
         return_state,
     ):
         assert return_state is True
-        calls.append(("list", user_id, start_date, end_date, dry_run))
+        calls.append(("list", user_id, start_date, end_date, dry_run, scan_archive))
         return FakeState([{"activityId": 1001}, {"activityId": 1002}])
 
     def fake_activity_summary_task(
@@ -291,7 +292,7 @@ def test_user_flow_runs_selected_objects_sequentially(monkeypatch):
     assert calls == [
         ("daily", 7, date(2026, 6, 1), True),
         ("daily", 7, date(2026, 6, 2), True),
-        ("list", 7, date(2026, 6, 1), date(2026, 6, 2), True),
+        ("list", 7, date(2026, 6, 1), date(2026, 6, 2), True, False),
         ("activity-summary", 7, 1001, True, {"activityId": 1001}),
         ("activity-detail", 7, 1001, True),
         ("activity-summary", 7, 1002, True, {"activityId": 1002}),
@@ -310,8 +311,9 @@ def test_list_activity_summaries_task_preserves_dry_run(monkeypatch):
         end_date,
         dry_run,
         raise_on_error,
+        scan_archive,
     ):
-        calls.append((user_id, start_date, end_date, dry_run, raise_on_error))
+        calls.append((user_id, start_date, end_date, dry_run, raise_on_error, scan_archive))
         return [{"activityId": 1001}]
 
     monkeypatch.setattr(tasks, "list_activity_summaries", fake_list_activity_summaries)
@@ -324,7 +326,7 @@ def test_list_activity_summaries_task_preserves_dry_run(monkeypatch):
     )
 
     assert result == [{"activityId": 1001}]
-    assert calls == [(7, date(2026, 6, 1), date(2026, 6, 2), True, True)]
+    assert calls == [(7, date(2026, 6, 1), date(2026, 6, 2), True, True, False)]
 
 
 def test_ingest_activity_summary_task_passes_summary_fallback(monkeypatch):
@@ -612,6 +614,7 @@ def test_backfill_runs_one_chunk_and_enqueues_the_full_remainder(monkeypatch):
             "fail_on_partial": False,
             "include_details": True,
             "include_files": True,
+            "scan_archive": False,
         }
     ]
     assert deployment_calls[0][0] == "garmin-backfill/backfill"

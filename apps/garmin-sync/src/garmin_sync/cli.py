@@ -149,6 +149,7 @@ def run(
     data_type: list[str] = typer.Option(None, "--data-type", "-t", help="Data types to ingest (daily-summary, activities, personal-records)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Fetch data but don't write to DB"),
     fail_on_partial: bool = typer.Option(False, "--fail-on-partial", help="Exit non-zero when any selected object is partial"),
+    scan_archive: bool = typer.Option(False, "--scan-archive", help="Also scan Garmin's full activity list for edits to older activities"),
 ) -> None:
     """Run incremental ingestion for all active users."""
     if days_back is not None and days_back < 1:
@@ -168,6 +169,7 @@ def run(
             user_filter=user,
             dry_run=dry_run,
             data_types=parsed_data_types,
+            scan_archive=scan_archive,
         )
 
     _print_results(results)
@@ -183,6 +185,7 @@ def backfill(
     data_type: list[str] = typer.Option(None, "--data-type", "-t", help="Data types to ingest (daily-summary, activities, personal-records)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Fetch data but don't write to DB"),
     fail_on_partial: bool = typer.Option(False, "--fail-on-partial", help="Exit non-zero when any selected object is partial"),
+    scan_archive: bool = typer.Option(False, "--scan-archive", help="Also scan Garmin's full activity list for edits to older activities"),
 ) -> None:
     """Run historical backfill for all active users."""
     from garmin_sync.ingest.pipeline import run_for_all_users
@@ -203,6 +206,7 @@ def backfill(
             user_filter=user,
             dry_run=dry_run,
             data_types=parsed_data_types,
+            scan_archive=scan_archive,
         )
 
     _print_results(results)
@@ -252,6 +256,7 @@ def activities(
     include_details: bool = typer.Option(True, "--include-details/--skip-details", help="Fetch chart and polyline details"),
     include_files: bool = typer.Option(True, "--include-files/--skip-files", help="Download original activity files"),
     fail_on_partial: bool = typer.Option(False, "--fail-on-partial", help="Exit non-zero when any selected object is partial"),
+    scan_archive: bool = typer.Option(False, "--scan-archive", help="Also scan Garmin's full activity list for edits to older activities"),
 ) -> None:
     """Ingest activities."""
     if days_back is not None and days_back < 1:
@@ -273,6 +278,7 @@ def activities(
             data_types=["activities"],
             include_details=include_details,
             include_files=include_files,
+            scan_archive=scan_archive,
         )
 
     _print_results(results)

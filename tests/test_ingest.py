@@ -213,6 +213,7 @@ def test_incremental_ingest_refreshes_edited_older_activity(
     result = runners.ingest_activities_range(
         user_id=user.id, start_date=date(2026, 6, 10), end_date=date(2026, 6, 10),
         include_details=False, include_files=False, session=session,
+        scan_archive=True,
     )
 
     session.expire_all()
@@ -240,6 +241,33 @@ def test_archive_scan_failure_keeps_date_window_activities(session, monkeypatch)
 
         def get_activities(self, start, limit):
             raise TimeoutError("archive request timed out")
+
+    monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
+    monkeypatch.setattr(runners, "GarminClient", FakeGarminClient)
+    monkeypatch.setattr(runners, "save_tokens", lambda session, user, garmin: None)
+
+    result = runners.list_activity_summaries(
+        user_id=user.id, start_date=date(2026, 6, 10), end_date=date(2026, 6, 10),
+        session=session, scan_archive=True,
+    )
+
+    assert result == [in_window]
+
+
+def test_archive_scan_skipped_by_default(session, monkeypatch):
+    user = _create_user(session)
+    _create_activity(session, user.id, 24604320109)
+    in_window = {"activityId": 24604320111, "activityName": "Today Run"}
+
+    class FakeGarminClient:
+        def __init__(self, garmin):
+            self.garmin = garmin
+
+        def get_activities_by_date(self, startdate, enddate):
+            return [in_window]
+
+        def get_activities(self, start, limit):
+            raise AssertionError("archive scan must not run without scan_archive")
 
     monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
     monkeypatch.setattr(runners, "GarminClient", FakeGarminClient)
@@ -1145,6 +1173,7 @@ class TestRunForAllUsersDateRange:
             data_types=None,
             include_details=True,
             include_files=True,
+            scan_archive=False,
         ):
             calls.append((start_date, end_date))
             return {"daily_summary": {"status": "success", "rows": 0, "errors": 0}}
@@ -1173,6 +1202,7 @@ class TestRunForAllUsersDateRange:
             data_types=None,
             include_details=True,
             include_files=True,
+            scan_archive=False,
         ):
             calls.append((start_date, end_date))
             return {"daily_summary": {"status": "success", "rows": 0, "errors": 0}}

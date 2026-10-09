@@ -378,6 +378,7 @@ def list_activity_ids(
     dry_run: bool = False,
     session: Session | None = None,
     raise_on_error: bool = True,
+    scan_archive: bool = False,
 ) -> list[int]:
     raw_activities = list_activity_summaries(
         user_id=user_id,
@@ -386,6 +387,7 @@ def list_activity_ids(
         dry_run=dry_run,
         session=session,
         raise_on_error=raise_on_error,
+        scan_archive=scan_archive,
     )
     return [int(raw_activity["activityId"]) for raw_activity in raw_activities]
 
@@ -398,6 +400,7 @@ def list_activity_summaries(
     dry_run: bool = False,
     session: Session | None = None,
     raise_on_error: bool = True,
+    scan_archive: bool = False,
 ) -> list[dict]:
     with _session_scope(session) as current_session:
         try:
@@ -411,14 +414,19 @@ def list_activity_summaries(
                 end_date.isoformat(),
             )
             # The date window follows activity start times, so edits to older
-            # activities need a lightweight scan of Garmin's activity list.
-            archived = {
-                row.activity_id: row
-                for row in current_session.scalars(
-                    select(Activity).where(Activity.user_id == user_id)
-                ).all()
-            }
-            seen = {int(row["activityId"]) for row in raw_activities}
+            # activities need a scan of Garmin's activity list. The scan pages
+            # through the full history and loads every archived row, so it is
+            # opt-in (manual runs) rather than part of every incremental.
+            archived = {}
+            seen = set()
+            if scan_archive:
+                archived = {
+                    row.activity_id: row
+                    for row in current_session.scalars(
+                        select(Activity).where(Activity.user_id == user_id)
+                    ).all()
+                }
+                seen = {int(row["activityId"]) for row in raw_activities}
             if archived and hasattr(client, "get_activities"):
                 offset = 0
                 page_size = 1000
@@ -738,6 +746,7 @@ def ingest_activities_range(
     include_details: bool = True,
     include_files: bool = True,
     session: Session | None = None,
+    scan_archive: bool = False,
 ) -> IngestResult:
     try:
         raw_activities = list_activity_summaries(
@@ -746,6 +755,7 @@ def ingest_activities_range(
             end_date=end_date,
             dry_run=dry_run,
             session=session,
+            scan_archive=scan_archive,
         )
     except Exception as e:
         logger.warning(
@@ -867,6 +877,7 @@ def ingest_selected_objects(
     include_details: bool = True,
     include_files: bool = True,
     session: Session | None = None,
+    scan_archive: bool = False,
 ) -> IngestSummary:
     selected_data_types = normalize_data_types(data_types)
     results: list[IngestResult] = []
@@ -892,6 +903,7 @@ def ingest_selected_objects(
                     include_details=include_details,
                     include_files=include_files,
                     session=session,
+                    scan_archive=scan_archive,
                 )
             )
         elif data_type == PERSONAL_RECORDS:
