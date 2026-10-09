@@ -78,6 +78,20 @@ See `specs/` directory for detailed design documents:
 
 This project uses **Vikunja** (via the `vja` CLI) for task management. Do **not** use beads for task tracking — always use Vikunja skills instead.
 
+## Agent skills
+
+### Issue tracker
+
+Work is tracked in Vikunja through `vja`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the five default triage state labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Use the single root glossary and `docs/adr/`. See `docs/agents/domain.md`.
+
 ## Conventions
 
 - All timestamps stored as TIMESTAMPTZ (UTC)

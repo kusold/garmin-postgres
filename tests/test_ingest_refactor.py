@@ -1,4 +1,5 @@
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
@@ -105,3 +106,43 @@ class TestIngestCliValidation:
 
         assert result.exit_code == 1
         assert "Unknown ingest data type 'sleep'" in result.output
+
+
+def test_reconcile_activities_cli_reports_partial_as_failure(monkeypatch):
+    import garmin_sync.cli as cli
+    import garmin_sync.ingest.pipeline as pipeline
+    import garmin_sync.ingest.reconciliation as reconciliation
+
+    class FakeSession:
+        def __init__(self, engine):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    calls = []
+    monkeypatch.setattr(cli, "_ensure_db_ready", lambda: None)
+    monkeypatch.setattr(cli, "get_engine", lambda: object())
+    monkeypatch.setattr(cli, "Session", FakeSession)
+    monkeypatch.setattr(
+        pipeline,
+        "get_active_users",
+        lambda session, user_filter: [SimpleNamespace(id=7, garmin_display_name="runner")],
+    )
+
+    def fake_reconcile(*, user_id, dry_run, session):
+        calls.append((user_id, dry_run, session))
+        return IngestResult.error_result(
+            "activity_reconciliation", error="Garmin page timed out", rows=1
+        )
+
+    monkeypatch.setattr(reconciliation, "reconcile_activity_archive", fake_reconcile)
+
+    result = CliRunner().invoke(app, ["ingest", "reconcile-activities", "--dry-run"])
+
+    assert result.exit_code == 1
+    assert "runner / activity_reconciliation" in result.output
+    assert calls[0][:2] == (7, True)

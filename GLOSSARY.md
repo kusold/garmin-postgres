@@ -7,6 +7,9 @@ Terms for the archived Garmin data and its per-user Notion destination.
 **Activity archive run**:
 One attempt to archive a Garmin activity for a user, including its activity row and any selected detail or original file.
 
+**Activity archive reconciliation**:
+One comparison of a user's full Garmin activity list with their archived activities, to archive missing activities and refresh archived activities whose selected summary fields changed.
+
 **Notion sync target**:
 The Notion destination configured for one Garmin user, including its integration token and database IDs.
 

@@ -114,8 +114,17 @@ deployments:
       data_types: null
       dry_run: false
       fail_on_partial: false
-      scan_archive: false
       chunk_days: 30
+    work_pool: *garmin_backfill
+
+  - name: reconcile-activities
+    entrypoint: garmin_orchestrator.flows.garmin_reconcile_activities_flow
+    description: Manual full-history activity reconciliation.
+    concurrency_limit:
+      limit: 1
+      collision_strategy: ENQUEUE
+    parameters:
+      dry_run: false
     work_pool: *garmin_backfill
 
   - name: backfill-sweep

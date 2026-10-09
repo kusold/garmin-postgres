@@ -19,6 +19,7 @@ from garmin_postgres.db import get_engine
 from garmin_postgres.models.user import User
 from garmin_sync.ingest.date_windows import resolve_date_window
 from garmin_sync.ingest.results import IngestResult
+from garmin_sync.ingest.reconciliation import reconcile_activity_archive
 from garmin_sync.ingest.runners import (
     GarminTokenLoadError,
     ingest_activity,
@@ -34,9 +35,20 @@ GARMIN_API_RETRIES = 3
 GARMIN_API_RETRY_DELAYS = [60, 300, 900]
 GARMIN_API_TAGS = ["garmin-api"]
 GARMIN_API_TIMEOUT_SECONDS = 15 * 60
+RECONCILIATION_TIMEOUT_SECONDS = 3 * 60 * 60
 DATABASE_TIMEOUT_SECONDS = 5 * 60
 DATABASE_QUERY_TIMEOUT_SECONDS = 2 * 60
 logger = logging.getLogger(__name__)
+
+
+@task(
+    name="reconcile-activity-archive",
+    task_run_name="activity-reconciliation-{user_id}",
+    tags=GARMIN_API_TAGS,
+    timeout_seconds=RECONCILIATION_TIMEOUT_SECONDS,
+)
+def reconcile_activity_archive_task(*, user_id: int, dry_run: bool = False) -> dict[str, Any]:
+    return reconcile_activity_archive(user_id=user_id, dry_run=dry_run).as_dict()
 
 
 def _retry_garmin_api_failure(_task, _task_run, state) -> bool:
@@ -205,17 +217,14 @@ def list_activity_summaries_task(
     start_date: date,
     end_date: date,
     dry_run: bool = False,
-    scan_archive: bool = False,
 ) -> list[dict[str, Any]]:
     run_logger = _get_logger()
     run_logger.info(
-        "Listing activity summaries: user_id=%s window=%s..%s dry_run=%s "
-        "scan_archive=%s",
+        "Listing activity summaries: user_id=%s window=%s..%s dry_run=%s",
         user_id,
         start_date,
         end_date,
         dry_run,
-        scan_archive,
     )
     try:
         summaries = list_activity_summaries(
@@ -224,7 +233,6 @@ def list_activity_summaries_task(
             end_date=end_date,
             dry_run=dry_run,
             raise_on_error=True,
-            scan_archive=scan_archive,
         )
     except Exception:
         run_logger.exception(

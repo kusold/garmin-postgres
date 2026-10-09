@@ -19,6 +19,7 @@ from garmin_orchestrator.flows import (
     garmin_archive_flow,
     garmin_archive_user_flow,
     garmin_backfill_flow,
+    garmin_reconcile_activities_flow,
 )
 from garmin_sync.ingest.results import IngestResult
 from garmin_sync.ingest.runners import GarminTokenLoadError
@@ -112,6 +113,38 @@ def test_prefect_yaml_defines_weekly_backfill_sweep():
     assert day_of_week.isdigit(), "sweep must pin a single weekday to stay weekly"
 
 
+def test_reconciliation_flow_runs_per_user_and_has_manual_deployment(monkeypatch):
+    calls = []
+    monkeypatch.setattr("garmin_orchestrator.flows.ensure_database_ready_task", lambda: None)
+    monkeypatch.setattr(
+        "garmin_orchestrator.flows.resolve_active_users_task",
+        lambda *, user_filter: [{"id": 7, "display_name": "runner"}],
+    )
+
+    def fake_reconcile_task(*, user_id, dry_run, return_state):
+        calls.append((user_id, dry_run, return_state))
+        return FakeState({"status": "success", "rows": 1, "errors": 0, "missing": 1})
+
+    monkeypatch.setattr(
+        "garmin_orchestrator.flows.reconcile_activity_archive_task",
+        fake_reconcile_task,
+    )
+
+    result = garmin_reconcile_activities_flow.fn(user="runner", dry_run=True)
+
+    assert result["results"] == [{
+        "user": "runner",
+        "activity_reconciliation": {"status": "success", "rows": 1, "errors": 0, "missing": 1},
+    }]
+    assert calls == [(7, True, True)]
+
+    config_path = Path(__file__).parents[3] / "prefect.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    deployment = next(d for d in config["deployments"] if d["name"] == "reconcile-activities")
+    assert deployment["entrypoint"] == "garmin_orchestrator.flows.garmin_reconcile_activities_flow"
+    assert "schedule" not in deployment
+
+
 def test_aggregates_child_results_without_losing_metrics():
     result = _aggregate_result_dicts(
         "activities",
@@ -193,11 +226,10 @@ def test_user_flow_runs_selected_objects_sequentially(monkeypatch):
         start_date,
         end_date,
         dry_run,
-        scan_archive,
         return_state,
     ):
         assert return_state is True
-        calls.append(("list", user_id, start_date, end_date, dry_run, scan_archive))
+        calls.append(("list", user_id, start_date, end_date, dry_run))
         return FakeState([{"activityId": 1001}, {"activityId": 1002}])
 
     def fake_activity_summary_task(
@@ -292,7 +324,7 @@ def test_user_flow_runs_selected_objects_sequentially(monkeypatch):
     assert calls == [
         ("daily", 7, date(2026, 6, 1), True),
         ("daily", 7, date(2026, 6, 2), True),
-        ("list", 7, date(2026, 6, 1), date(2026, 6, 2), True, False),
+        ("list", 7, date(2026, 6, 1), date(2026, 6, 2), True),
         ("activity-summary", 7, 1001, True, {"activityId": 1001}),
         ("activity-detail", 7, 1001, True),
         ("activity-summary", 7, 1002, True, {"activityId": 1002}),
@@ -311,9 +343,8 @@ def test_list_activity_summaries_task_preserves_dry_run(monkeypatch):
         end_date,
         dry_run,
         raise_on_error,
-        scan_archive,
     ):
-        calls.append((user_id, start_date, end_date, dry_run, raise_on_error, scan_archive))
+        calls.append((user_id, start_date, end_date, dry_run, raise_on_error))
         return [{"activityId": 1001}]
 
     monkeypatch.setattr(tasks, "list_activity_summaries", fake_list_activity_summaries)
@@ -326,7 +357,7 @@ def test_list_activity_summaries_task_preserves_dry_run(monkeypatch):
     )
 
     assert result == [{"activityId": 1001}]
-    assert calls == [(7, date(2026, 6, 1), date(2026, 6, 2), True, True, False)]
+    assert calls == [(7, date(2026, 6, 1), date(2026, 6, 2), True, True)]
 
 
 def test_ingest_activity_summary_task_passes_summary_fallback(monkeypatch):
@@ -614,7 +645,6 @@ def test_backfill_runs_one_chunk_and_enqueues_the_full_remainder(monkeypatch):
             "fail_on_partial": False,
             "include_details": True,
             "include_files": True,
-            "scan_archive": False,
         }
     ]
     assert deployment_calls[0][0] == "garmin-backfill/backfill"

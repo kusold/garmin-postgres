@@ -8,6 +8,7 @@ from sqlalchemy import select, update
 import garmin_sync.ingest.date_windows as date_windows
 import garmin_sync.ingest.pipeline as pipeline
 import garmin_sync.ingest.runners as runners
+from garmin_sync.ingest.reconciliation import reconcile_activity_archive
 from garmin_sync.ingest.pipeline import (
     upsert_activity,
     upsert_activity_detail,
@@ -164,97 +165,7 @@ def _create_activity(session, user_id, activity_id=100) -> Activity:
     return activity
 
 
-@pytest.mark.parametrize(
-    ("new_name", "new_type", "favorite"),
-    [
-        ("Lakewood Walk Test", "running", False),
-        ("Test Run", "walking", False),
-        ("Test Run", "running", True),
-    ],
-)
-def test_incremental_ingest_refreshes_edited_older_activity(
-    session, monkeypatch, new_name, new_type, favorite,
-):
-    user = _create_user(session)
-    activity_id = 24604320109
-    _create_activity(session, user.id, activity_id)
-    calls = []
-
-    class FakeGarminClient:
-        def __init__(self, garmin):
-            self.garmin = garmin
-
-        def get_activities_by_date(self, startdate, enddate):
-            return []
-
-        def get_activities(self, start, limit):
-            calls.append((start, limit))
-            return [{
-                "activityId": activity_id,
-                "activityName": new_name,
-                "activityType": {"typeKey": new_type},
-                "favorite": favorite,
-            }]
-
-        def get_activity(self, activity_id_text):
-            return {
-                "activityId": int(activity_id_text),
-                "activityName": new_name,
-                "activityTypeDTO": {"typeKey": new_type},
-                "metadataDTO": {"favorite": favorite},
-                "summaryDTO": {"startTimeGMT": "2026-06-01T07:30:00"},
-            }
-
-    monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
-    monkeypatch.setattr(runners, "GarminClient", FakeGarminClient)
-    monkeypatch.setattr(runners, "save_tokens", lambda session, user, garmin: None)
-    monkeypatch.setattr(runners.time, "sleep", lambda seconds: None)
-
-    result = runners.ingest_activities_range(
-        user_id=user.id, start_date=date(2026, 6, 10), end_date=date(2026, 6, 10),
-        include_details=False, include_files=False, session=session,
-        scan_archive=True,
-    )
-
-    session.expire_all()
-    refreshed = session.scalars(
-        select(Activity).where(Activity.user_id == user.id, Activity.activity_id == activity_id)
-    ).one()
-    assert result.rows == 1
-    assert calls == [(0, 1000)]
-    assert refreshed.raw_json["activityName"] == new_name
-    assert refreshed.activity_type == new_type
-    assert refreshed.raw_json["metadataDTO"]["favorite"] is favorite
-
-
-def test_archive_scan_failure_keeps_date_window_activities(session, monkeypatch):
-    user = _create_user(session)
-    _create_activity(session, user.id, 24604320109)
-    in_window = {"activityId": 24604320110, "activityName": "Today Run"}
-
-    class FakeGarminClient:
-        def __init__(self, garmin):
-            self.garmin = garmin
-
-        def get_activities_by_date(self, startdate, enddate):
-            return [in_window]
-
-        def get_activities(self, start, limit):
-            raise TimeoutError("archive request timed out")
-
-    monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
-    monkeypatch.setattr(runners, "GarminClient", FakeGarminClient)
-    monkeypatch.setattr(runners, "save_tokens", lambda session, user, garmin: None)
-
-    result = runners.list_activity_summaries(
-        user_id=user.id, start_date=date(2026, 6, 10), end_date=date(2026, 6, 10),
-        session=session, scan_archive=True,
-    )
-
-    assert result == [in_window]
-
-
-def test_archive_scan_skipped_by_default(session, monkeypatch):
+def test_date_window_listing_does_not_scan_archive(session, monkeypatch):
     user = _create_user(session)
     _create_activity(session, user.id, 24604320109)
     in_window = {"activityId": 24604320111, "activityName": "Today Run"}
@@ -267,7 +178,7 @@ def test_archive_scan_skipped_by_default(session, monkeypatch):
             return [in_window]
 
         def get_activities(self, start, limit):
-            raise AssertionError("archive scan must not run without scan_archive")
+            raise AssertionError("date-window listing must not scan the archive")
 
     monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
     monkeypatch.setattr(runners, "GarminClient", FakeGarminClient)
@@ -279,6 +190,228 @@ def test_archive_scan_skipped_by_default(session, monkeypatch):
     )
 
     assert result == [in_window]
+
+
+def test_reconciliation_fully_archives_missing_activity(session, monkeypatch):
+    user = _create_user(session)
+    calls = []
+
+    class FakeGarminClient:
+        def __init__(self, garmin):
+            self.garmin = garmin
+
+        def get_activities(self, start, limit):
+            calls.append(("page", start, limit))
+            return [{"activityId": 201, "activityName": "New Run"}]
+
+        def get_activity(self, activity_id):
+            calls.append(("activity", activity_id))
+            return {
+                "activityId": 201,
+                "activityName": "New Run",
+                "activityTypeDTO": {"typeKey": "running"},
+                "summaryDTO": {"startTimeGMT": "2026-06-01T07:30:00"},
+            }
+
+        def get_activity_details(self, activity_id, *, maxchart, maxpoly):
+            calls.append(("details", activity_id))
+            return {"chart": []}
+
+        def download_activity(self, activity_id):
+            calls.append(("file", activity_id))
+            return b"fit-data"
+
+    monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
+    monkeypatch.setattr(runners, "GarminClient", FakeGarminClient)
+    monkeypatch.setattr(runners, "save_tokens", lambda session, user, garmin: None)
+
+    result = reconcile_activity_archive(user_id=user.id, session=session)
+
+    archived = session.scalars(select(Activity).where(Activity.user_id == user.id)).one()
+    detail = session.scalars(select(ActivityDetail).where(ActivityDetail.activity_id == archived.id)).one()
+    file = session.scalars(select(ActivityFile).where(ActivityFile.activity_id == archived.id)).one()
+    assert result.status == "success"
+    assert result.rows == 1
+    assert result.metrics["missing"] == 1
+    assert archived.raw_json["activityName"] == "New Run"
+    assert detail.raw_json == {"chart": []}
+    assert file.file_data == b"fit-data"
+    assert calls == [("page", 0, 1000), ("activity", "201"), ("details", "201"), ("file", "201")]
+
+
+def test_reconciliation_refreshes_changed_row_without_optional_steps(session, monkeypatch):
+    user = _create_user(session)
+    _create_activity(session, user.id, 202)
+
+    class FakeGarminClient:
+        def __init__(self, garmin):
+            self.garmin = garmin
+
+        def get_activities(self, start, limit):
+            return [{"activityId": 202, "activityName": "Renamed Run"}]
+
+        def get_activity(self, activity_id):
+            return {
+                "activityId": 202,
+                "activityName": "Renamed Run",
+                "activityTypeDTO": {"typeKey": "running"},
+                "summaryDTO": {"startTimeGMT": "2026-06-01T07:30:00"},
+            }
+
+        def get_activity_details(self, *args, **kwargs):
+            raise AssertionError("changed rows must not fetch chart details")
+
+        def download_activity(self, *args, **kwargs):
+            raise AssertionError("changed rows must not download files")
+
+    monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
+    monkeypatch.setattr(runners, "GarminClient", FakeGarminClient)
+    monkeypatch.setattr(runners, "save_tokens", lambda session, user, garmin: None)
+
+    result = reconcile_activity_archive(user_id=user.id, session=session)
+
+    session.expire_all()
+    archived = session.scalars(select(Activity).where(Activity.activity_id == 202)).one()
+    assert result.status == "success"
+    assert result.metrics["changed"] == 1
+    assert archived.raw_json["activityName"] == "Renamed Run"
+    assert session.scalars(select(ActivityDetail).where(ActivityDetail.activity_id == archived.id)).all() == []
+    assert session.scalars(select(ActivityFile).where(ActivityFile.activity_id == archived.id)).all() == []
+
+
+def test_reconciliation_dry_run_reports_changes_without_writing(session, monkeypatch):
+    user = _create_user(session)
+    _create_activity(session, user.id, 202)
+
+    class FakeGarminClient:
+        def __init__(self, garmin):
+            self.garmin = garmin
+
+        def get_activities(self, start, limit):
+            return [
+                {"activityId": 202, "activityName": "Renamed Run"},
+                {"activityId": 203, "activityName": "New Run"},
+            ]
+
+        def get_activity(self, activity_id):
+            raise AssertionError("dry run only needs activity list summaries")
+
+        def get_activity_details(self, *args, **kwargs):
+            raise AssertionError("dry run only needs activity list summaries")
+
+        def download_activity(self, *args, **kwargs):
+            raise AssertionError("dry run must not download files")
+
+    monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
+    monkeypatch.setattr(runners, "GarminClient", FakeGarminClient)
+
+    result = reconcile_activity_archive(user_id=user.id, dry_run=True, session=session)
+
+    session.expire_all()
+    activities = session.scalars(select(Activity).where(Activity.user_id == user.id)).all()
+    assert result.status == "success"
+    assert result.metrics["missing"] == 1
+    assert result.metrics["changed"] == 1
+    assert [(row.activity_id, row.raw_json["activityName"]) for row in activities] == [(202, "Test Run")]
+
+
+def test_reconciliation_reports_partial_after_later_page_fails(session, monkeypatch):
+    user = _create_user(session)
+
+    class FakeGarminClient:
+        def __init__(self, garmin):
+            self.garmin = garmin
+
+        def get_activities(self, start, limit):
+            if start:
+                raise TimeoutError("Garmin page timed out")
+            return [{"activityId": 204, "activityName": "New Run"}] * limit
+
+        def get_activity(self, activity_id):
+            return {"activityId": 204, "activityName": "New Run"}
+
+        def get_activity_details(self, *args, **kwargs):
+            return {}
+
+        def download_activity(self, *args, **kwargs):
+            return b"fit-data"
+
+    monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
+    monkeypatch.setattr(runners, "GarminClient", FakeGarminClient)
+    monkeypatch.setattr(runners, "save_tokens", lambda session, user, garmin: None)
+
+    result = reconcile_activity_archive(user_id=user.id, session=session)
+
+    assert result.status == "partial"
+    assert result.rows == 1
+    assert result.errors == 1
+    assert "Garmin page timed out" in result.error
+    assert session.scalars(select(Activity).where(Activity.activity_id == 204)).one()
+
+
+def test_reconciliation_continues_after_activity_failure(session, monkeypatch):
+    user = _create_user(session)
+
+    class FakeGarminClient:
+        def __init__(self, garmin):
+            self.garmin = garmin
+
+        def get_activities(self, start, limit):
+            return [{"activityId": 205}, {"activityId": 206}]
+
+        def get_activity(self, activity_id):
+            return {"activityId": int(activity_id)}
+
+        def get_activity_details(self, activity_id, *, maxchart, maxpoly):
+            if activity_id == "205":
+                raise TimeoutError("activity detail timed out")
+            return {}
+
+        def download_activity(self, activity_id):
+            return b"fit-data"
+
+    monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
+    monkeypatch.setattr(runners, "GarminClient", FakeGarminClient)
+    monkeypatch.setattr(runners, "save_tokens", lambda session, user, garmin: None)
+
+    result = reconcile_activity_archive(user_id=user.id, session=session)
+
+    assert result.status == "partial"
+    assert result.rows == 2
+    assert result.errors == 1
+    assert "Activity 205" in result.error
+    assert {row.activity_id for row in session.scalars(select(Activity)).all()} == {205, 206}
+
+
+def test_reconciliation_continues_after_invalid_activity_summary(session, monkeypatch):
+    user = _create_user(session)
+
+    class FakeGarminClient:
+        def __init__(self, garmin):
+            self.garmin = garmin
+
+        def get_activities(self, start, limit):
+            return [{"activityName": "Missing ID"}, {"activityId": 207}]
+
+        def get_activity(self, activity_id):
+            return {"activityId": 207}
+
+        def get_activity_details(self, *args, **kwargs):
+            return {}
+
+        def download_activity(self, activity_id):
+            return b"fit-data"
+
+    monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
+    monkeypatch.setattr(runners, "GarminClient", FakeGarminClient)
+    monkeypatch.setattr(runners, "save_tokens", lambda session, user, garmin: None)
+
+    result = reconcile_activity_archive(user_id=user.id, session=session)
+
+    assert result.status == "partial"
+    assert result.rows == 1
+    assert result.errors == 1
+    assert session.scalars(select(Activity).where(Activity.activity_id == 207)).one()
 
 
 class TestUpsertActivity:
@@ -1173,7 +1306,6 @@ class TestRunForAllUsersDateRange:
             data_types=None,
             include_details=True,
             include_files=True,
-            scan_archive=False,
         ):
             calls.append((start_date, end_date))
             return {"daily_summary": {"status": "success", "rows": 0, "errors": 0}}
@@ -1202,7 +1334,6 @@ class TestRunForAllUsersDateRange:
             data_types=None,
             include_details=True,
             include_files=True,
-            scan_archive=False,
         ):
             calls.append((start_date, end_date))
             return {"daily_summary": {"status": "success", "rows": 0, "errors": 0}}

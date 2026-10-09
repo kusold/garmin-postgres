@@ -33,6 +33,7 @@ from garmin_orchestrator.tasks import (
     ingest_daily_summary_day_task,
     ingest_personal_records_task,
     list_activity_summaries_task,
+    reconcile_activity_archive_task,
     resolve_active_users_task,
     resolve_date_window_task,
 )
@@ -46,6 +47,45 @@ DEFAULT_BACKFILL_CHUNK_DAYS = 30
 MAX_BACKFILL_CHUNK_DAYS = 90
 BACKFILL_DEPLOYMENT_NAME = "garmin-backfill/backfill"
 logger = logging.getLogger(__name__)
+
+
+@flow(name="garmin-reconcile-activities", timeout_seconds=ARCHIVE_FLOW_TIMEOUT_SECONDS)
+def garmin_reconcile_activities_flow(
+    *,
+    user: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Run the full activity reconciliation as a standalone manual job."""
+    ensure_database_ready_task()
+    users = resolve_active_users_task(user_filter=user)
+    results = [
+        {
+            "user": user_ref["display_name"],
+            "activity_reconciliation": _task_state_result(
+                reconcile_activity_archive_task(
+                    user_id=int(user_ref["id"]),
+                    dry_run=dry_run,
+                    return_state=True,
+                ),
+                data_type="activity_reconciliation",
+            ),
+        }
+        for user_ref in users
+    ]
+    errors, partials = _count_failures(results)
+    summary = {
+        "dry_run": dry_run,
+        "errors": errors,
+        "partials": partials,
+        "results": results,
+    }
+    _get_logger().info("Activity archive reconciliation completed: %s", summary)
+    if errors or partials:
+        raise RuntimeError(
+            "Activity archive reconciliation completed with "
+            f"{errors} failed user(s) and {partials} partial user(s)"
+        )
+    return summary
 
 
 def _get_logger():
@@ -236,7 +276,6 @@ def garmin_archive_user_flow(
     dry_run: bool = False,
     include_details: bool = True,
     include_files: bool = True,
-    scan_archive: bool = False,
 ) -> dict[str, Any]:
     user_id = int(user_ref["id"])
     run_logger = _get_logger()
@@ -244,7 +283,7 @@ def garmin_archive_user_flow(
 
     run_logger.info(
         "Starting archive for user=%s user_id=%s window=%s..%s data_types=%s "
-        "dry_run=%s include_details=%s include_files=%s scan_archive=%s",
+        "dry_run=%s include_details=%s include_files=%s",
         user_ref["display_name"],
         user_id,
         start_date,
@@ -253,7 +292,6 @@ def garmin_archive_user_flow(
         dry_run,
         include_details,
         include_files,
-        scan_archive,
     )
 
     if DAILY_SUMMARY in data_types:
@@ -301,7 +339,6 @@ def garmin_archive_user_flow(
             start_date=start_date,
             end_date=end_date,
             dry_run=dry_run,
-            scan_archive=scan_archive,
             return_state=True,
         )
         activity_results: list[dict[str, Any]] = []
@@ -439,7 +476,6 @@ def garmin_archive_flow(
     fail_on_partial: bool = False,
     include_details: bool = True,
     include_files: bool = True,
-    scan_archive: bool = False,
 ) -> dict[str, Any]:
     run_logger = _get_logger()
     run_logger.info("Checking database connectivity and applying pending migrations")
@@ -454,7 +490,7 @@ def garmin_archive_flow(
 
     run_logger.info(
         "Starting Garmin archive: window=%s..%s users=%s data_types=%s dry_run=%s "
-        "fail_on_partial=%s include_details=%s include_files=%s scan_archive=%s "
+        "fail_on_partial=%s include_details=%s include_files=%s "
         "user_filter=%r",
         window["start_date"],
         window["end_date"],
@@ -464,7 +500,6 @@ def garmin_archive_flow(
         fail_on_partial,
         include_details,
         include_files,
-        scan_archive,
         user,
     )
     if not users:
@@ -479,7 +514,6 @@ def garmin_archive_flow(
             dry_run=dry_run,
             include_details=include_details,
             include_files=include_files,
-            scan_archive=scan_archive,
         )
         for user_ref in users
     ]
@@ -529,7 +563,6 @@ def garmin_backfill_flow(
     fail_on_partial: bool = False,
     include_details: bool = True,
     include_files: bool = True,
-    scan_archive: bool = False,
     chunk_days: int = DEFAULT_BACKFILL_CHUNK_DAYS,
     chain_id: str | None = None,
 ) -> dict[str, Any]:
@@ -581,7 +614,6 @@ def garmin_backfill_flow(
         fail_on_partial=fail_on_partial,
         include_details=include_details,
         include_files=include_files,
-        scan_archive=scan_archive,
     )
 
     continuation_run_id: str | None = None
@@ -600,7 +632,6 @@ def garmin_backfill_flow(
             "fail_on_partial": fail_on_partial,
             "include_details": include_details,
             "include_files": include_files,
-            "scan_archive": scan_archive,
             "chunk_days": chunk_days,
             "chain_id": resolved_chain_id,
         }

@@ -378,7 +378,6 @@ def list_activity_ids(
     dry_run: bool = False,
     session: Session | None = None,
     raise_on_error: bool = True,
-    scan_archive: bool = False,
 ) -> list[int]:
     raw_activities = list_activity_summaries(
         user_id=user_id,
@@ -387,7 +386,6 @@ def list_activity_ids(
         dry_run=dry_run,
         session=session,
         raise_on_error=raise_on_error,
-        scan_archive=scan_archive,
     )
     return [int(raw_activity["activityId"]) for raw_activity in raw_activities]
 
@@ -400,7 +398,6 @@ def list_activity_summaries(
     dry_run: bool = False,
     session: Session | None = None,
     raise_on_error: bool = True,
-    scan_archive: bool = False,
 ) -> list[dict]:
     with _session_scope(session) as current_session:
         try:
@@ -413,71 +410,6 @@ def list_activity_summaries(
                 start_date.isoformat(),
                 end_date.isoformat(),
             )
-            # The date window follows activity start times, so edits to older
-            # activities need a scan of Garmin's activity list. The scan pages
-            # through the full history and loads every archived row, so it is
-            # opt-in (manual runs) rather than part of every incremental.
-            archived = {}
-            seen = set()
-            if scan_archive:
-                archived = {
-                    row.activity_id: row
-                    for row in current_session.scalars(
-                        select(Activity).where(Activity.user_id == user_id)
-                    ).all()
-                }
-                seen = {int(row["activityId"]) for row in raw_activities}
-            if archived and hasattr(client, "get_activities"):
-                offset = 0
-                page_size = 1000
-                while True:
-                    try:
-                        page = client.get_activities(offset, page_size)
-                    except Exception as e:
-                        logger.warning(
-                            "Archive scan failed for user %s at offset %s; "
-                            "continuing with date-window activities: %s",
-                            user_id, offset, e,
-                        )
-                        break
-                    for summary in page:
-                        activity_id = int(summary["activityId"])
-                        stored = archived.get(activity_id)
-                        if stored is None or activity_id in seen:
-                            continue
-                        raw = stored.raw_json or {}
-                        metadata = raw.get("metadataDTO")
-                        if not isinstance(metadata, dict):
-                            metadata = {}
-                        activity_type = (
-                            summary.get("activityType") or summary.get("activityTypeDTO") or {}
-                        )
-                        type_key = (
-                            activity_type.get("typeKey")
-                            if isinstance(activity_type, dict) else None
-                        )
-                        if (
-                            (
-                                "activityName" in summary
-                                and summary["activityName"] != raw.get("activityName")
-                            )
-                            or (type_key is not None and type_key != stored.activity_type)
-                            or (
-                                "favorite" in summary
-                                and bool(summary["favorite"])
-                                != bool(raw.get("favorite") or metadata.get("favorite"))
-                            )
-                            or (
-                                "pr" in summary
-                                and bool(summary["pr"])
-                                != bool(raw.get("pr") or metadata.get("personalRecord"))
-                            )
-                        ):
-                            raw_activities.append(summary)
-                            seen.add(activity_id)
-                    if len(page) < page_size:
-                        break
-                    offset += page_size
             if not dry_run:
                 _save_tokens_and_mark_ingested(
                     current_session,
@@ -746,7 +678,6 @@ def ingest_activities_range(
     include_details: bool = True,
     include_files: bool = True,
     session: Session | None = None,
-    scan_archive: bool = False,
 ) -> IngestResult:
     try:
         raw_activities = list_activity_summaries(
@@ -755,7 +686,6 @@ def ingest_activities_range(
             end_date=end_date,
             dry_run=dry_run,
             session=session,
-            scan_archive=scan_archive,
         )
     except Exception as e:
         logger.warning(
@@ -877,7 +807,6 @@ def ingest_selected_objects(
     include_details: bool = True,
     include_files: bool = True,
     session: Session | None = None,
-    scan_archive: bool = False,
 ) -> IngestSummary:
     selected_data_types = normalize_data_types(data_types)
     results: list[IngestResult] = []
@@ -903,7 +832,6 @@ def ingest_selected_objects(
                     include_details=include_details,
                     include_files=include_files,
                     session=session,
-                    scan_archive=scan_archive,
                 )
             )
         elif data_type == PERSONAL_RECORDS:
