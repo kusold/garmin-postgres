@@ -3,7 +3,7 @@ from datetime import date, datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 import garmin_sync.ingest.date_windows as date_windows
 import garmin_sync.ingest.pipeline as pipeline
@@ -116,6 +116,39 @@ class TestUpsertDailySummary:
             select(DailySummary).where(DailySummary.calendar_date == date(2026, 6, 1))
         ).all()
         assert len(results) == 2
+
+    def test_upsert_refreshes_updated_at(self, session):
+        aged = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        user = _create_user(session)
+        upsert_daily_summary(
+            session,
+            DailySummary(
+                user_id=user.id,
+                calendar_date=date(2026, 6, 1),
+                raw_json={"totalSteps": 5000},
+            ),
+        )
+        session.execute(
+            update(DailySummary)
+            .where(DailySummary.user_id == user.id)
+            .values(updated_at=aged)
+        )
+
+        upsert_daily_summary(
+            session,
+            DailySummary(
+                user_id=user.id,
+                calendar_date=date(2026, 6, 1),
+                raw_json={"totalSteps": 8432},
+            ),
+        )
+
+        session.expire_all()
+        refreshed = session.scalars(
+            select(DailySummary).where(DailySummary.user_id == user.id)
+        ).one()
+        assert refreshed.updated_at is not None
+        assert refreshed.updated_at > aged
 
 
 def _create_activity(session, user_id, activity_id=100) -> Activity:
@@ -389,6 +422,41 @@ class TestUpsertActivityFile:
         assert len(results) == 3
         assert {r.file_format for r in results} == {"fit", "gpx", "tcx"}
 
+    def test_upsert_refreshes_updated_at(self, session):
+        aged = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        user = _create_user(session)
+        activity = _create_activity(session, user.id, activity_id=8101)
+
+        upsert_activity_file(
+            session,
+            ActivityFile(
+                activity_id=activity.id,
+                file_format="fit",
+                file_data=b"version 1",
+            ),
+        )
+        session.execute(
+            update(ActivityFile)
+            .where(ActivityFile.activity_id == activity.id)
+            .values(updated_at=aged)
+        )
+
+        upsert_activity_file(
+            session,
+            ActivityFile(
+                activity_id=activity.id,
+                file_format="fit",
+                file_data=b"version 2",
+            ),
+        )
+
+        session.expire_all()
+        refreshed = session.scalars(
+            select(ActivityFile).where(ActivityFile.activity_id == activity.id)
+        ).one()
+        assert refreshed.updated_at is not None
+        assert refreshed.updated_at > aged
+
 
 class TestUpsertActivityDetail:
     def test_insert_new_detail(self, session):
@@ -456,6 +524,43 @@ class TestUpsertActivityDetail:
         results = session.scalars(select(ActivityDetail)).all()
         assert len(results) == 2
         assert {r.raw_json["activityId"] for r in results} == {9003, 9004}
+
+    def test_upsert_refreshes_updated_at(self, session):
+        aged = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        user = _create_user(session)
+        activity = _create_activity(session, user.id, activity_id=9101)
+
+        upsert_activity_detail(
+            session,
+            ActivityDetail(
+                activity_id=activity.id,
+                max_chart_size=2000,
+                max_polyline_size=4000,
+                raw_json={"version": 1},
+            ),
+        )
+        session.execute(
+            update(ActivityDetail)
+            .where(ActivityDetail.activity_id == activity.id)
+            .values(updated_at=aged)
+        )
+
+        upsert_activity_detail(
+            session,
+            ActivityDetail(
+                activity_id=activity.id,
+                max_chart_size=1000,
+                max_polyline_size=3000,
+                raw_json={"version": 2},
+            ),
+        )
+
+        session.expire_all()
+        refreshed = session.scalars(
+            select(ActivityDetail).where(ActivityDetail.activity_id == activity.id)
+        ).one()
+        assert refreshed.updated_at is not None
+        assert refreshed.updated_at > aged
 
 
 class TestRunIngestionActivityDetails:
@@ -978,6 +1083,46 @@ class TestUpsertPersonalRecord:
             )
         ).all()
         assert len(results) == 2
+
+    def test_upsert_refreshes_updated_at(self, session):
+        aged = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        user = _create_user(session)
+
+        upsert_personal_record(
+            session,
+            PersonalRecord(
+                user_id=user.id,
+                type_id=3,
+                record_date=date(2026, 6, 1),
+                activity_type="running",
+                value_text="00:22:14",
+                raw_json={"version": 1},
+            ),
+        )
+        session.execute(
+            update(PersonalRecord)
+            .where(PersonalRecord.user_id == user.id)
+            .values(updated_at=aged)
+        )
+
+        upsert_personal_record(
+            session,
+            PersonalRecord(
+                user_id=user.id,
+                type_id=3,
+                record_date=date(2026, 6, 1),
+                activity_type="trail_running",
+                value_text="00:22:14",
+                raw_json={"version": 2},
+            ),
+        )
+
+        session.expire_all()
+        refreshed = session.scalars(
+            select(PersonalRecord).where(PersonalRecord.user_id == user.id)
+        ).one()
+        assert refreshed.updated_at is not None
+        assert refreshed.updated_at > aged
 
 
 class TestRunForAllUsersDateRange:

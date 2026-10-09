@@ -117,6 +117,7 @@ def upsert_daily_summary(session: Session, summary: DailySummary) -> DailySummar
         index_elements=["user_id", "calendar_date"],
         set_={
             "raw_json": stmt.excluded.raw_json,
+            "updated_at": datetime.now(timezone.utc),
         },
     )
     session.execute(stmt)
@@ -173,6 +174,7 @@ def upsert_activity_file(session: Session, activity_file: ActivityFile) -> Activ
         set_={
             "file_data": stmt.excluded.file_data,
             "raw_json": stmt.excluded.raw_json,
+            "updated_at": datetime.now(timezone.utc),
         },
     )
     session.execute(stmt)
@@ -199,6 +201,7 @@ def upsert_activity_detail(
             "max_chart_size": stmt.excluded.max_chart_size,
             "max_polyline_size": stmt.excluded.max_polyline_size,
             "raw_json": stmt.excluded.raw_json,
+            "updated_at": datetime.now(timezone.utc),
         },
     )
     session.execute(stmt)
@@ -227,6 +230,7 @@ def upsert_personal_record(
             "activity_type": stmt.excluded.activity_type,
             "value_text": stmt.excluded.value_text,
             "raw_json": stmt.excluded.raw_json,
+            "updated_at": datetime.now(timezone.utc),
         },
     )
     session.execute(stmt)
