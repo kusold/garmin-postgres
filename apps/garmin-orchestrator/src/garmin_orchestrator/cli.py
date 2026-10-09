@@ -17,7 +17,9 @@ from garmin_sync.ingest.object_registry import (
 from garmin_orchestrator.deployments import deploy_all
 from garmin_orchestrator.flows import garmin_archive_flow
 from garmin_orchestrator.notion_flows import (
+    DEFAULT_NOTION_BACKFILL_CHUNK_DAYS,
     normalize_notion_data_types,
+    notion_backfill_flow,
     notion_sync_flow,
 )
 
@@ -355,6 +357,30 @@ def run_notion_sync(
         days_back=days_back,
         start_date=_parse_date_option(start_date, "--start-date"),
         end_date=_parse_date_option(end_date, "--end-date"),
+        dry_run=dry_run,
+        fail_on_partial=fail_on_partial,
+    )
+
+
+@run_app.command("notion-backfill")
+def run_notion_backfill(
+    user: Annotated[str | None, typer.Option("--user", "-u")] = None,
+    start_date: Annotated[str | None, typer.Option("--start-date")] = None,
+    end_date: Annotated[str | None, typer.Option("--end-date")] = None,
+    days_back: Annotated[int | None, typer.Option("--days-back", "-d")] = None,
+    data_type: Annotated[list[str] | None, typer.Option("--data-type", "-t")] = None,
+    chunk_days: Annotated[int, typer.Option("--chunk-days")] = DEFAULT_NOTION_BACKFILL_CHUNK_DAYS,
+    dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
+    fail_on_partial: Annotated[bool, typer.Option("--fail-on-partial/--allow-partial")] = True,
+) -> None:
+    """Start a chunked PostgreSQL-to-Notion backfill."""
+    notion_backfill_flow(
+        user=user,
+        data_types=_parse_notion_data_type_options(data_type),
+        days_back=days_back,
+        start_date=_parse_date_option(start_date, "--start-date"),
+        end_date=_parse_date_option(end_date, "--end-date"),
+        chunk_days=chunk_days,
         dry_run=dry_run,
         fail_on_partial=fail_on_partial,
     )

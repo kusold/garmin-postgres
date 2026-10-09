@@ -1,4 +1,5 @@
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
@@ -6,8 +7,10 @@ from typer.testing import CliRunner
 from garmin_orchestrator import notion_flows, notion_tasks
 from garmin_orchestrator.cli import app
 from garmin_orchestrator.notion_flows import (
+    MAX_NOTION_BACKFILL_CHUNK_DAYS,
     _summary_markdown,
     normalize_notion_data_types,
+    notion_backfill_flow,
     notion_sync_flow,
 )
 
@@ -60,6 +63,7 @@ def test_notion_user_task_calls_shared_run(monkeypatch):
         "start_date": date(2026, 7, 29),
         "end_date": date(2026, 7, 30),
         "dry_run": False,
+        "include_updated_activities": True,
     })]
 
 
@@ -120,6 +124,7 @@ def test_notion_flow_infers_single_active_user_and_returns_summary(monkeypatch):
             "start_date": date(2026, 7, 29),
             "end_date": date(2026, 7, 30),
             "dry_run": False,
+            "include_updated_activities": True,
         },
     ]
     assert result["window"] == {
@@ -298,3 +303,102 @@ def test_notion_sync_cli_calls_flow_with_parsed_options(monkeypatch):
             "fail_on_partial": True,
         }
     ]
+
+
+def test_notion_backfill_syncs_one_chunk_and_queues_remaining_dates(monkeypatch):
+    sync_calls = []
+    queued = []
+    monkeypatch.setattr(notion_flows, "resolve_date_window_task", lambda **_: {
+        "start_date": date(2020, 1, 1), "end_date": date(2020, 12, 31),
+    })
+    monkeypatch.setattr(notion_flows, "notion_sync_flow", lambda **kw: (
+        sync_calls.append(kw) or {"window": {}, "errors": 0, "partials": 0}
+    ))
+    monkeypatch.setattr(notion_flows, "run_deployment", lambda name, **kw: (
+        queued.append((name, kw)) or SimpleNamespace(id="next-id")
+    ))
+
+    result = notion_backfill_flow.fn(
+        user="mike", chunk_days=180, start_date=date(2020, 1, 1),
+        end_date=date(2020, 12, 31), chain_id="chain-1",
+    )
+
+    assert sync_calls == [{
+        "user": "mike",
+        "data_types": ["activities", "daily_steps", "personal_records"],
+        "days_back": None,
+        "start_date": date(2020, 1, 1),
+        "end_date": date(2020, 6, 28),
+        "dry_run": False,
+        "fail_on_partial": True,
+        "include_updated_activities": False,
+    }]
+    name, continuation = queued[0]
+    assert name == "garmin-notion-backfill/notion-backfill"
+    assert continuation["parameters"]["start_date"] == date(2020, 6, 29)
+    assert continuation["parameters"]["end_date"] == date(2020, 12, 31)
+    assert continuation["parameters"]["data_types"] == ["activities", "daily_steps"]
+    assert continuation["parameters"]["chain_id"] == "chain-1"
+    assert continuation["timeout"] == 0
+    assert continuation["as_subflow"] is False
+    assert continuation["idempotency_key"] == "notion-backfill:chain-1:2020-06-29"
+    assert result["backfill"]["continuation_run_id"] == "next-id"
+
+
+def test_notion_backfill_does_not_queue_after_failure_or_final_chunk(monkeypatch):
+    calls = []
+    monkeypatch.setattr(notion_flows, "resolve_date_window_task", lambda **_: {
+        "start_date": date(2020, 1, 1), "end_date": date(2020, 1, 31),
+    })
+    monkeypatch.setattr(notion_flows, "run_deployment", lambda *a, **kw: (
+        calls.append((a, kw))
+    ))
+    monkeypatch.setattr(notion_flows, "notion_sync_flow", lambda **_: {
+        "window": {}, "errors": 0, "partials": 0,
+    })
+    result = notion_backfill_flow.fn(
+        start_date=date(2020, 1, 1), chunk_days=31,
+    )
+    assert result["backfill"]["continuation_run_id"] is None
+    assert calls == []
+
+    def fail_sync(**_):
+        raise RuntimeError("partial sync")
+
+    monkeypatch.setattr(notion_flows, "notion_sync_flow", fail_sync)
+    with pytest.raises(RuntimeError, match="partial sync"):
+        notion_backfill_flow.fn(start_date=date(2020, 1, 1), chunk_days=1)
+    assert calls == []
+
+
+def test_notion_backfill_rejects_unbounded_or_invalid_window():
+    with pytest.raises(ValueError, match="requires start_date or days_back"):
+        notion_backfill_flow.fn()
+    with pytest.raises(ValueError, match=f"between 1 and {MAX_NOTION_BACKFILL_CHUNK_DAYS}"):
+        notion_backfill_flow.fn(start_date=date(2020, 1, 1), chunk_days=366)
+
+
+def test_notion_backfill_cli_passes_dates_and_chunk_size(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "garmin_orchestrator.cli.notion_backfill_flow",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    result = CliRunner().invoke(app, [
+        "run", "notion-backfill", "--user", "mike",
+        "--start-date", "2020-01-01", "--end-date", "2020-12-31",
+        "--data-type", "daily_steps", "--chunk-days", "90",
+    ])
+
+    assert result.exit_code == 0
+    assert calls == [{
+        "user": "mike",
+        "data_types": ["daily_steps"],
+        "days_back": None,
+        "start_date": date(2020, 1, 1),
+        "end_date": date(2020, 12, 31),
+        "chunk_days": 90,
+        "dry_run": False,
+        "fail_on_partial": True,
+    }]
