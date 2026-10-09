@@ -19,7 +19,11 @@ from garmin_postgres.db import get_engine
 from garmin_postgres.models.user import User
 from garmin_sync.ingest.date_windows import resolve_date_window
 from garmin_sync.ingest.results import IngestResult
-from garmin_sync.ingest.reconciliation import scan_activity_archive_page
+from garmin_sync.ingest.reconciliation import (
+    ReconciliationActivityError,
+    reconcile_activity_candidate,
+    scan_activity_archive_page,
+)
 from garmin_sync.ingest.runners import (
     GarminTokenLoadError,
     ingest_activity,
@@ -73,23 +77,17 @@ def scan_activity_archive_page_task(
     timeout_seconds=GARMIN_API_TIMEOUT_SECONDS,
 )
 def ingest_reconciliation_activity_task(
-    *, user_id: int, activity_id: int, summary: dict[str, Any],
-    include_details: bool, include_files: bool,
+    *, user_id: int, activity_id: int, candidate: dict[str, Any],
 ) -> dict[str, Any]:
-    result = ingest_activity(
+    result = reconcile_activity_candidate(
         user_id=user_id,
-        activity_id=activity_id,
-        include_details=include_details,
-        include_files=include_files,
-        activity_summary=summary,
+        candidate=candidate,
         raise_on_error=True,
     )
     if result.status != "success":
         if result.error == "Failed to load tokens":
             raise GarminTokenLoadError(result.error)
-        raise RuntimeError(
-            result.error or f"Activity {activity_id} had {result.errors} error(s)"
-        )
+        raise ReconciliationActivityError(result)
     return result.as_dict()
 
 

@@ -13,6 +13,7 @@ from garmin_orchestrator.flows import (
     MAX_BACKFILL_CHUNK_DAYS,
     _aggregate_result_dicts,
     _backfill_chunk_end,
+    _reconciliation_task_result,
     _summary_markdown,
     _summarize_failures,
     _task_state_result,
@@ -22,6 +23,7 @@ from garmin_orchestrator.flows import (
     garmin_reconcile_activities_flow,
 )
 from garmin_sync.ingest.results import IngestResult
+from garmin_sync.ingest.reconciliation import ReconciliationActivityError
 from garmin_sync.ingest.runners import GarminTokenLoadError
 
 
@@ -194,9 +196,8 @@ def test_reconciliation_flow_runs_each_activity_as_a_task(monkeypatch):
         }),
     )
 
-    def fake_activity_task(*, user_id, activity_id, summary, include_details,
-                           include_files, return_state):
-        calls.append((user_id, activity_id, include_details, include_files, return_state))
+    def fake_activity_task(*, user_id, activity_id, candidate, return_state):
+        calls.append((user_id, activity_id, candidate["missing"], return_state))
         return FakeState({"status": "success", "rows": 1, "errors": 0})
 
     monkeypatch.setattr(
@@ -206,27 +207,56 @@ def test_reconciliation_flow_runs_each_activity_as_a_task(monkeypatch):
 
     result = garmin_reconcile_activities_flow.fn(user="runner")
 
-    assert calls == [(7, 1001, True, True, True)]
+    assert calls == [(7, 1001, True, True)]
     assert result["results"][0]["activity_reconciliation"]["rows"] == 1
 
 
 def test_reconciliation_activity_task_raises_partial_for_prefect_retry(monkeypatch):
     monkeypatch.setattr(
         tasks,
-        "ingest_activity",
+        "reconcile_activity_candidate",
         lambda **kwargs: IngestResult.error_result(
             "activities", error="FIT download timed out", rows=1
         ),
     )
 
-    with pytest.raises(RuntimeError, match="FIT download timed out"):
+    with pytest.raises(ReconciliationActivityError, match="FIT download timed out"):
         tasks.ingest_reconciliation_activity_task.fn(
             user_id=7,
             activity_id=1001,
-            summary={"activityId": 1001},
-            include_details=True,
-            include_files=True,
+            candidate={"activity_id": 1001, "missing": True},
         )
+
+
+def test_reconciliation_flow_reports_partial_after_activity_task_failure(monkeypatch):
+    monkeypatch.setattr("garmin_orchestrator.flows.ensure_database_ready_task", lambda: None)
+    monkeypatch.setattr(
+        "garmin_orchestrator.flows.resolve_active_users_task",
+        lambda *, user_filter: [{"id": 7, "display_name": "runner"}],
+    )
+    monkeypatch.setattr(
+        "garmin_orchestrator.flows.scan_activity_archive_page_task",
+        lambda **kwargs: FakeState({
+            "scanned": 1,
+            "errors": [],
+            "candidates": [{"activity_id": 1001, "missing": True, "changed": False,
+                            "incomplete": False, "summary": {"activityId": 1001}}],
+        }),
+    )
+    failed_state = FakeState(
+        ReconciliationActivityError(IngestResult.error_result(
+            "activities", error="FIT download timed out", rows=1,
+        )),
+        completed=False,
+    )
+    monkeypatch.setattr(
+        "garmin_orchestrator.flows.ingest_reconciliation_activity_task",
+        lambda **kwargs: failed_state,
+    )
+
+    assert _reconciliation_task_result(failed_state)["rows"] == 1
+    with pytest.raises(RuntimeError, match="1 partial user"):
+        garmin_reconcile_activities_flow.fn(user="runner")
 
 
 def test_aggregates_child_results_without_losing_metrics():

@@ -47,9 +47,8 @@ uv run garmin-sync auth status
 
 The legacy `garmin-postgres` command remains available as an alias for `garmin-sync`.
 
-## Notion Sync
+## Activity archive reconciliation
 
-`notion-sync` reads from PostgreSQL only. It does not fetch new Garmin data.
 Activity archive reconciliation scans Garmin's full activity list for activities
 missing from PostgreSQL and edits to archived names, types, favorites, and
 personal-record flags. Missing activities receive a full archive run; edited
@@ -57,8 +56,13 @@ activities refresh their activity row. Run it manually with
 `uv run garmin-sync ingest reconcile-activities` (optionally `--user` or
 `--dry-run`) or the `reconcile-activities` Prefect deployment. The job also
 retries missing chart details or original files on archived activities. The
-Notion sync includes recently refreshed archive rows even when their activity
-dates are outside its date window.
+job reports partial results when some activities fail and exits nonzero.
+
+## Notion Sync
+
+`notion-sync` reads from PostgreSQL only. It does not fetch new Garmin data.
+It includes recently refreshed archive rows even when their activity dates
+are outside its date window.
 Last-written values used to preserve destination edits live in the shared
 `destination_sync_states` table; each destination decides what JSON it stores.
 

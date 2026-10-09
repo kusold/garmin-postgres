@@ -23,7 +23,11 @@ from garmin_sync.ingest.object_registry import (
     PERSONAL_RECORDS,
     normalize_data_types,
 )
-from garmin_sync.ingest.reconciliation import PAGE_SIZE, RECONCILIATION
+from garmin_sync.ingest.reconciliation import (
+    RECONCILIATION,
+    ReconciliationActivityError,
+    run_activity_reconciliation,
+)
 from garmin_sync.ingest.results import IngestResult, aggregate_results
 
 from garmin_orchestrator.tasks import (
@@ -64,11 +68,7 @@ def garmin_reconcile_activities_flow(
     results = []
     for user_ref in users:
         user_id = int(user_ref["id"])
-        scanned = missing = changed = incomplete = rows = errors = 0
-        error_messages: list[str] = []
-        seen_ids: set[int] = set()
-        offset = 0
-        while True:
+        def scan_page(offset: int) -> dict[str, Any]:
             page_state = scan_activity_archive_page_task(
                 user_id=user_id,
                 offset=offset,
@@ -76,58 +76,31 @@ def garmin_reconcile_activities_flow(
                 return_state=True,
             )
             if not page_state.is_completed():
-                errors += 1
-                error_messages.append(
-                    f"Archive scan failed at offset {offset}: "
-                    f"{page_state.result(raise_on_failure=False)}"
+                raise RuntimeError(
+                    page_state.result(raise_on_failure=False)
                 )
-                break
-            page = page_state.result()
-            scanned += page["scanned"]
-            errors += len(page["errors"])
-            error_messages.extend(page["errors"])
-            for candidate in page["candidates"]:
-                activity_id = candidate["activity_id"]
-                if activity_id in seen_ids:
-                    continue
-                seen_ids.add(activity_id)
-                missing += candidate["missing"]
-                changed += candidate["changed"]
-                incomplete += candidate["incomplete"]
-                if dry_run:
-                    rows += 1
-                    continue
-                item_state = ingest_reconciliation_activity_task(
-                    user_id=user_id,
-                    activity_id=activity_id,
-                    summary=candidate["summary"],
-                    include_details=candidate["needs_detail"],
-                    include_files=candidate["needs_file"],
-                    return_state=True,
-                )
-                item_result = _task_state_result(
-                    item_state, data_type=RECONCILIATION
-                )
-                rows += item_result.get("rows", 0)
-                errors += item_result.get("errors", 0)
-                if item_result.get("error"):
-                    error_messages.append(item_result["error"])
-            if page["scanned"] < PAGE_SIZE:
-                break
-            offset += PAGE_SIZE
+            return page_state.result()
 
-        result = {
-            "status": "partial" if errors and rows else "error" if errors else "success",
-            "rows": rows,
-            "errors": errors,
-            "scanned": scanned,
-            "missing": missing,
-            "changed": changed,
-            "incomplete": incomplete,
-        }
-        if error_messages:
-            result["error"] = "; ".join(error_messages)
-        results.append({"user": user_ref["display_name"], RECONCILIATION: result})
+        def archive_candidate(candidate: dict[str, Any]) -> IngestResult:
+            item_state = ingest_reconciliation_activity_task(
+                user_id=user_id,
+                activity_id=candidate["activity_id"],
+                candidate=candidate,
+                return_state=True,
+            )
+            return _dict_to_ingest_result(
+                RECONCILIATION, _reconciliation_task_result(item_state)
+            )
+
+        result = run_activity_reconciliation(
+            dry_run=dry_run,
+            scan_page=scan_page,
+            archive_candidate=archive_candidate,
+        )
+        results.append({
+            "user": user_ref["display_name"],
+            RECONCILIATION: result.as_dict(),
+        })
     errors, partials = _count_failures(results)
     summary = {
         "dry_run": dry_run,
@@ -226,6 +199,17 @@ def _task_state_result(
         data_type,
         error=str(error),
         metrics=failure_metrics,
+    ).as_dict()
+
+
+def _reconciliation_task_result(state: Any) -> dict[str, Any]:
+    if state.is_completed():
+        return state.result()
+    failure = state.result(raise_on_failure=False)
+    if isinstance(failure, ReconciliationActivityError):
+        return failure.result.as_dict()
+    return IngestResult.error_result(
+        RECONCILIATION, error=str(failure)
     ).as_dict()
 
 

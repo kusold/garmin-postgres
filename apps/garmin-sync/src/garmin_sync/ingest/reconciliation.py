@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import select
 from sqlmodel import Session
@@ -18,11 +18,23 @@ from garmin_sync.ingest.runners import (
     _save_tokens_and_mark_ingested,
     _session_scope,
     ingest_activity,
+    ingest_activity_detail,
+    ingest_activity_file,
 )
 
 
 PAGE_SIZE = 1000
 RECONCILIATION = "activity_reconciliation"
+
+
+class ReconciliationActivityError(RuntimeError):
+    """An activity failed after some archive work may have completed."""
+
+    def __init__(self, result: IngestResult):
+        self.result = result
+        super().__init__(
+            result.error or f"Activity archive had {result.errors} error(s)"
+        )
 
 
 def _summary_changed(summary: dict, stored: Activity) -> bool:
@@ -111,9 +123,15 @@ def scan_activity_archive_page(
             stored = stored_by_id.get(activity_id)
             is_missing = stored is None
             is_changed = stored is not None and _summary_changed(summary, stored)
-            needs_detail = is_missing or stored.id not in detail_ids
-            needs_file = is_missing or stored.id not in file_ids
-            is_incomplete = not is_missing and (needs_detail or needs_file)
+            needs_detail = is_missing or (
+                not is_changed and stored.id not in detail_ids
+            )
+            needs_file = is_missing or (
+                not is_changed and stored.id not in file_ids
+            )
+            is_incomplete = (
+                not is_missing and not is_changed and (needs_detail or needs_file)
+            )
             if is_missing or is_changed or is_incomplete:
                 candidates.append({
                     "activity_id": activity_id,
@@ -132,6 +150,50 @@ def scan_activity_archive_page(
         return {"scanned": len(page), "errors": errors, "candidates": candidates}
 
 
+def reconcile_activity_candidate(
+    *,
+    user_id: int,
+    candidate: dict[str, Any],
+    session: Session | None = None,
+    raise_on_error: bool = False,
+) -> IngestResult:
+    """Apply one candidate without refreshing an unchanged activity row."""
+    activity_id = candidate["activity_id"]
+    if candidate["missing"] or candidate["changed"]:
+        return ingest_activity(
+            user_id=user_id,
+            activity_id=activity_id,
+            include_details=candidate["missing"],
+            include_files=candidate["missing"],
+            activity_summary=candidate["summary"],
+            session=session,
+            raise_on_error=raise_on_error,
+        )
+
+    steps: list[IngestResult] = []
+    if candidate["needs_detail"]:
+        steps.append(
+            ingest_activity_detail(
+                user_id=user_id, activity_id=activity_id, session=session,
+            )
+        )
+    if candidate["needs_file"]:
+        steps.append(
+            ingest_activity_file(
+                user_id=user_id, activity_id=activity_id, session=session,
+            )
+        )
+    errors = sum(step.errors for step in steps)
+    rows = int(any(step.status == "success" for step in steps))
+    return IngestResult(
+        data_type=RECONCILIATION,
+        status="partial" if errors and rows else "error" if errors else "success",
+        rows=rows,
+        errors=errors,
+        error="; ".join(step.error for step in steps if step.error) or None,
+    )
+
+
 def reconcile_activity_archive(
     *,
     user_id: int,
@@ -140,62 +202,76 @@ def reconcile_activity_archive(
 ) -> IngestResult:
     """Archive missing activities and refresh changed or incomplete ones."""
     with _session_scope(session) as current_session:
-        scanned = missing = changed = incomplete = rows = errors = 0
-        error_messages: list[str] = []
-        seen_ids: set[int] = set()
-        offset = 0
-        while True:
+        return run_activity_reconciliation(
+            dry_run=dry_run,
+            scan_page=lambda offset: scan_activity_archive_page(
+                user_id=user_id, offset=offset, dry_run=dry_run,
+                session=current_session,
+            ),
+            archive_candidate=lambda candidate: reconcile_activity_candidate(
+                user_id=user_id, candidate=candidate, session=current_session,
+            ),
+        )
+
+
+def run_activity_reconciliation(
+    *,
+    dry_run: bool,
+    scan_page: Callable[[int], dict[str, Any]],
+    archive_candidate: Callable[[dict[str, Any]], IngestResult],
+) -> IngestResult:
+    """Apply the same pagination, counting, and failure policy for every runner."""
+    scanned = missing = changed = incomplete = rows = errors = 0
+    error_messages: list[str] = []
+    seen_ids: set[int] = set()
+    offset = 0
+    while True:
+        try:
+            page = scan_page(offset)
+        except Exception as exc:
+            errors += 1
+            error_messages.append(f"Archive scan failed at offset {offset}: {exc}")
+            break
+        scanned += page["scanned"]
+        errors += len(page["errors"])
+        error_messages.extend(page["errors"])
+        for candidate in page["candidates"]:
+            activity_id = candidate["activity_id"]
+            if activity_id in seen_ids:
+                continue
+            seen_ids.add(activity_id)
+            missing += candidate["missing"]
+            changed += candidate["changed"]
+            incomplete += candidate["incomplete"]
+            if dry_run:
+                rows += 1
+                continue
             try:
-                page = scan_activity_archive_page(
-                    user_id=user_id, offset=offset, dry_run=dry_run,
-                    session=current_session,
-                )
+                result = archive_candidate(candidate)
             except Exception as exc:
                 errors += 1
-                error_messages.append(f"Archive scan failed at offset {offset}: {exc}")
-                break
-            scanned += page["scanned"]
-            errors += len(page["errors"])
-            error_messages.extend(page["errors"])
-            for candidate in page["candidates"]:
-                activity_id = candidate["activity_id"]
-                if activity_id in seen_ids:
-                    continue
-                seen_ids.add(activity_id)
-                missing += candidate["missing"]
-                changed += candidate["changed"]
-                incomplete += candidate["incomplete"]
-                if dry_run:
-                    rows += 1
-                    continue
-                result = ingest_activity(
-                    user_id=user_id,
-                    activity_id=activity_id,
-                    include_details=candidate["needs_detail"],
-                    include_files=candidate["needs_file"],
-                    activity_summary=candidate["summary"],
-                    session=current_session,
+                error_messages.append(f"Activity {activity_id} failed: {exc}")
+                continue
+            rows += result.rows
+            errors += result.errors
+            if result.errors:
+                error_messages.append(
+                    result.error or f"Activity {activity_id} had {result.errors} error(s)"
                 )
-                rows += result.rows
-                errors += result.errors
-                if result.errors:
-                    error_messages.append(
-                        result.error or f"Activity {activity_id} had {result.errors} error(s)"
-                    )
-            if page["scanned"] < PAGE_SIZE:
-                break
-            offset += PAGE_SIZE
+        if page["scanned"] < PAGE_SIZE:
+            break
+        offset += PAGE_SIZE
 
-        return IngestResult(
-            data_type=RECONCILIATION,
-            status="partial" if errors and rows else "error" if errors else "success",
-            rows=rows,
-            errors=errors,
-            metrics={
-                "scanned": scanned,
-                "missing": missing,
-                "changed": changed,
-                "incomplete": incomplete,
-            },
-            error="; ".join(error_messages) if error_messages else None,
-        )
+    return IngestResult(
+        data_type=RECONCILIATION,
+        status="partial" if errors and rows else "error" if errors else "success",
+        rows=rows,
+        errors=errors,
+        metrics={
+            "scanned": scanned,
+            "missing": missing,
+            "changed": changed,
+            "incomplete": incomplete,
+        },
+        error="; ".join(error_messages) if error_messages else None,
+    )

@@ -242,9 +242,6 @@ def test_reconciliation_fully_archives_missing_activity(session, monkeypatch):
 def test_reconciliation_refreshes_changed_row_without_optional_steps(session, monkeypatch):
     user = _create_user(session)
     archived = _create_activity(session, user.id, 202)
-    session.add(ActivityDetail(activity_id=archived.id, raw_json={"chart": [1]}))
-    session.add(ActivityFile(activity_id=archived.id, file_format="fit", file_data=b"old-fit"))
-    session.flush()
 
     class FakeGarminClient:
         def __init__(self, garmin):
@@ -277,9 +274,10 @@ def test_reconciliation_refreshes_changed_row_without_optional_steps(session, mo
     archived = session.scalars(select(Activity).where(Activity.activity_id == 202)).one()
     assert result.status == "success"
     assert result.metrics["changed"] == 1
+    assert result.metrics["incomplete"] == 0
     assert archived.raw_json["activityName"] == "Renamed Run"
-    assert session.scalars(select(ActivityDetail).where(ActivityDetail.activity_id == archived.id)).one().raw_json == {"chart": [1]}
-    assert session.scalars(select(ActivityFile).where(ActivityFile.activity_id == archived.id)).one().file_data == b"old-fit"
+    assert session.scalars(select(ActivityDetail).where(ActivityDetail.activity_id == archived.id)).first() is None
+    assert session.scalars(select(ActivityFile).where(ActivityFile.activity_id == archived.id)).first() is None
 
 
 def test_reconciliation_completes_prior_partial_archive(session, monkeypatch):
@@ -294,7 +292,7 @@ def test_reconciliation_completes_prior_partial_archive(session, monkeypatch):
             return [{"activityId": 208, "activityName": "Test Run"}]
 
         def get_activity(self, activity_id):
-            return {"activityId": 208, "activityName": "Test Run"}
+            raise AssertionError("repair must not refresh the unchanged activity row")
 
         def get_activity_details(self, activity_id, *, maxchart, maxpoly):
             return {"chart": []}
@@ -305,6 +303,10 @@ def test_reconciliation_completes_prior_partial_archive(session, monkeypatch):
     monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
     monkeypatch.setattr(runners, "GarminClient", FakeGarminClient)
     monkeypatch.setattr(runners, "save_tokens", lambda session, user, garmin: None)
+    def reject_row_update(*args, **kwargs):
+        raise AssertionError("repair must not upsert the unchanged activity row")
+
+    monkeypatch.setattr(runners, "upsert_activity", reject_row_update)
 
     result = reconcile_activity_archive(user_id=user.id, session=session)
 
