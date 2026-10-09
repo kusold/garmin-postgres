@@ -232,6 +232,7 @@ def sync_activities(
     start_date: date | None = None,
     end_date: date | None = None,
     user_id: int | None = None,
+    include_updated_activities: bool = True,
 ) -> SyncResult:
     return _sync_table(
         session,
@@ -240,7 +241,9 @@ def sync_activities(
         label="activities",
         model=Activity,
         order_column=Activity.start_time,
-        date_window=_apply_activity_window,
+        date_window=(
+            _apply_activity_window if include_updated_activities else _apply_datetime_window
+        ),
         mapper=activity_page,
         start_date=start_date,
         end_date=end_date,
@@ -303,6 +306,7 @@ def run_sync(
     start_date: date | None = None,
     end_date: date | None = None,
     user_id: int | None = None,
+    include_updated_activities: bool = True,
 ) -> dict[str, dict]:
     selected = data_types or DATA_TYPES
     results: dict[str, dict] = {}
@@ -312,6 +316,7 @@ def run_sync(
             result = sync_activities(
                 session, sink, database_id,
                 start_date=start_date, end_date=end_date, user_id=user_id,
+                include_updated_activities=include_updated_activities,
             )
         elif data_type == "daily_steps":
             result = sync_daily_steps(

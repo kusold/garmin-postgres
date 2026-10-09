@@ -1016,6 +1016,32 @@ def test_sync_activities_includes_old_activity_refreshed_in_archive(session):
     assert result.updated == 1
 
 
+def test_historical_activity_chunk_excludes_updates_outside_its_dates(session):
+    user = User(garmin_display_name="notion-bounded-activity")
+    session.add(user)
+    session.flush()
+    session.add_all([
+        Activity(
+            user_id=user.id, activity_id=101,
+            start_time=datetime(2020, 1, 10, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 10, 8, tzinfo=timezone.utc), raw_json={},
+        ),
+        Activity(
+            user_id=user.id, activity_id=102,
+            start_time=datetime(2020, 2, 10, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 10, 8, tzinfo=timezone.utc), raw_json={},
+        ),
+    ])
+    session.flush()
+
+    result = sync_activities(
+        session, _RecordingSink("unchanged"), "db", user_id=user.id,
+        start_date=date(2020, 1, 1), end_date=date(2020, 1, 31),
+        include_updated_activities=False,
+    )
+    assert result.rows == 1
+
+
 def test_sync_daily_steps_passes_no_protected_properties():
     summary = DailySummary(
         user_id=1,

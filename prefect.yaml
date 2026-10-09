@@ -104,6 +104,20 @@ deployments:
       fail_on_partial: true
     work_pool: *garmin_scheduled
 
+  - name: notion-backfill
+    entrypoint: garmin_orchestrator.notion_flows.notion_backfill_flow
+    description: Chunked historical PostgreSQL-to-Notion sync.
+    concurrency_limit:
+      limit: 1
+      collision_strategy: ENQUEUE
+    parameters:
+      user: "f65ac324-cbcf-4438-8abe-30e8fedeec4d"
+      data_types: null
+      dry_run: false
+      fail_on_partial: true
+      chunk_days: 180
+    work_pool: *garmin_backfill
+
   - name: backfill
     entrypoint: garmin_orchestrator.flows.garmin_backfill_flow
     description: Chunked historical backfill with explicit dates or days_back.

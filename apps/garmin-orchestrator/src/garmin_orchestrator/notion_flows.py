@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
+from uuid import uuid4
 
 from prefect import flow, get_run_logger
 from prefect.artifacts import create_markdown_artifact
+from prefect.context import FlowRunContext
+from prefect.deployments import run_deployment
 from prefect.exceptions import MissingContextError
 
 from notion_sync.run import normalize_notion_data_types
@@ -23,6 +26,9 @@ from garmin_orchestrator.tasks import (
 
 DEFAULT_NOTION_SYNC_DAYS_BACK = 2
 NOTION_FLOW_TIMEOUT_SECONDS = 2 * 60 * 60
+DEFAULT_NOTION_BACKFILL_CHUNK_DAYS = 180
+MAX_NOTION_BACKFILL_CHUNK_DAYS = 365
+NOTION_BACKFILL_DEPLOYMENT_NAME = "garmin-notion-backfill/notion-backfill"
 logger = logging.getLogger(__name__)
 
 
@@ -114,6 +120,7 @@ def notion_sync_flow(
     end_date: date | None = None,
     dry_run: bool = False,
     fail_on_partial: bool = False,
+    include_updated_activities: bool = True,
 ) -> dict[str, Any]:
     """Sync archived PostgreSQL data for every Garmin user with a Notion target."""
     run_logger = _get_logger()
@@ -150,6 +157,7 @@ def notion_sync_flow(
             start_date=window["start_date"],
             end_date=window["end_date"],
             dry_run=dry_run,
+            include_updated_activities=include_updated_activities,
         )
         results.append({"user": sync_user["display_name"], **notion_results})
     errors, partials = _failure_counts(results)
@@ -181,3 +189,90 @@ def notion_sync_flow(
         results,
     )
     return summary
+
+
+@flow(name="garmin-notion-backfill", timeout_seconds=NOTION_FLOW_TIMEOUT_SECONDS)
+def notion_backfill_flow(
+    *,
+    user: str | None = None,
+    data_types: list[str] | None = None,
+    days_back: int | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    dry_run: bool = False,
+    fail_on_partial: bool = True,
+    chunk_days: int = DEFAULT_NOTION_BACKFILL_CHUNK_DAYS,
+    chain_id: str | None = None,
+) -> dict[str, Any]:
+    """Sync one dated chunk and enqueue the rest as independent deployment runs."""
+    if not 1 <= chunk_days <= MAX_NOTION_BACKFILL_CHUNK_DAYS:
+        raise ValueError(
+            f"chunk_days must be between 1 and {MAX_NOTION_BACKFILL_CHUNK_DAYS}"
+        )
+    if start_date is None and days_back is None:
+        raise ValueError("Notion backfill requires start_date or days_back")
+
+    window = resolve_date_window_task(
+        start_date=start_date, end_date=end_date, days_back=days_back,
+    )
+    selected = normalize_notion_data_types(data_types)
+    chunk_end = min(
+        window["end_date"], window["start_date"] + timedelta(days=chunk_days - 1),
+    )
+    context = FlowRunContext.get()
+    resolved_chain_id = chain_id or (
+        str(context.flow_run.id) if context and context.flow_run else str(uuid4())
+    )
+
+    summary = notion_sync_flow(
+        user=user,
+        data_types=selected,
+        days_back=None,
+        start_date=window["start_date"],
+        end_date=chunk_end,
+        dry_run=dry_run,
+        fail_on_partial=fail_on_partial,
+        include_updated_activities=False,
+    )
+
+    next_start = chunk_end + timedelta(days=1)
+    continuation_types = [type_ for type_ in selected if type_ != "personal_records"]
+    continuation_run_id = None
+    if next_start <= window["end_date"] and continuation_types:
+        continuation = run_deployment(
+            NOTION_BACKFILL_DEPLOYMENT_NAME,
+            parameters={
+                "user": user,
+                "data_types": continuation_types,
+                "days_back": None,
+                "start_date": next_start,
+                "end_date": window["end_date"],
+                "dry_run": dry_run,
+                "fail_on_partial": fail_on_partial,
+                "chunk_days": chunk_days,
+                "chain_id": resolved_chain_id,
+            },
+            flow_run_name=(
+                f"notion-backfill-{next_start.isoformat()}-through-"
+                f"{window['end_date'].isoformat()}"
+            ),
+            timeout=0,
+            tags=["notion-backfill", f"notion-backfill-chain:{resolved_chain_id}"],
+            idempotency_key=(
+                f"notion-backfill:{resolved_chain_id}:{next_start.isoformat()}"
+            ),
+            as_subflow=False,
+        )
+        continuation_run_id = str(continuation.id)
+    return {
+        **summary,
+        "backfill": {
+            "chain_id": resolved_chain_id,
+            "requested_window": {
+                "start_date": window["start_date"].isoformat(),
+                "end_date": window["end_date"].isoformat(),
+            },
+            "chunk_days": chunk_days,
+            "continuation_run_id": continuation_run_id,
+        },
+    }
