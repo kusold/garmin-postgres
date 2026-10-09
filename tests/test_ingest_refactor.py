@@ -124,7 +124,10 @@ def test_reconcile_activities_cli_reports_partial_as_failure(monkeypatch):
             pass
 
     calls = []
-    monkeypatch.setattr(cli, "_ensure_db_ready", lambda: None)
+    def fail_db_ready():
+        raise AssertionError("dry run must not migrate")
+
+    monkeypatch.setattr(cli, "_ensure_db_ready", fail_db_ready)
     monkeypatch.setattr(cli, "get_engine", lambda: object())
     monkeypatch.setattr(cli, "Session", FakeSession)
     monkeypatch.setattr(

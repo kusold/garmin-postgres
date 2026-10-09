@@ -19,7 +19,7 @@ from garmin_postgres.db import get_engine
 from garmin_postgres.models.user import User
 from garmin_sync.ingest.date_windows import resolve_date_window
 from garmin_sync.ingest.results import IngestResult
-from garmin_sync.ingest.reconciliation import reconcile_activity_archive
+from garmin_sync.ingest.reconciliation import scan_activity_archive_page
 from garmin_sync.ingest.runners import (
     GarminTokenLoadError,
     ingest_activity,
@@ -35,26 +35,62 @@ GARMIN_API_RETRIES = 3
 GARMIN_API_RETRY_DELAYS = [60, 300, 900]
 GARMIN_API_TAGS = ["garmin-api"]
 GARMIN_API_TIMEOUT_SECONDS = 15 * 60
-RECONCILIATION_TIMEOUT_SECONDS = 3 * 60 * 60
 DATABASE_TIMEOUT_SECONDS = 5 * 60
 DATABASE_QUERY_TIMEOUT_SECONDS = 2 * 60
 logger = logging.getLogger(__name__)
-
-
-@task(
-    name="reconcile-activity-archive",
-    task_run_name="activity-reconciliation-{user_id}",
-    tags=GARMIN_API_TAGS,
-    timeout_seconds=RECONCILIATION_TIMEOUT_SECONDS,
-)
-def reconcile_activity_archive_task(*, user_id: int, dry_run: bool = False) -> dict[str, Any]:
-    return reconcile_activity_archive(user_id=user_id, dry_run=dry_run).as_dict()
 
 
 def _retry_garmin_api_failure(_task, _task_run, state) -> bool:
     """Retry transient API failures, but not invalid local credentials."""
     failure = state.result(raise_on_failure=False)
     return not isinstance(failure, GarminTokenLoadError)
+
+
+@task(
+    name="scan-activity-archive-page",
+    task_run_name="activity-scan-{user_id}-{offset}",
+    retries=GARMIN_API_RETRIES,
+    retry_delay_seconds=GARMIN_API_RETRY_DELAYS,
+    retry_condition_fn=_retry_garmin_api_failure,
+    tags=GARMIN_API_TAGS,
+    timeout_seconds=GARMIN_API_TIMEOUT_SECONDS,
+)
+def scan_activity_archive_page_task(
+    *, user_id: int, offset: int, dry_run: bool = False,
+) -> dict[str, Any]:
+    return scan_activity_archive_page(
+        user_id=user_id, offset=offset, dry_run=dry_run
+    )
+
+
+@task(
+    name="ingest-reconciliation-activity",
+    task_run_name="reconcile-activity-{user_id}-{activity_id}",
+    retries=GARMIN_API_RETRIES,
+    retry_delay_seconds=GARMIN_API_RETRY_DELAYS,
+    retry_condition_fn=_retry_garmin_api_failure,
+    tags=GARMIN_API_TAGS,
+    timeout_seconds=GARMIN_API_TIMEOUT_SECONDS,
+)
+def ingest_reconciliation_activity_task(
+    *, user_id: int, activity_id: int, summary: dict[str, Any],
+    include_details: bool, include_files: bool,
+) -> dict[str, Any]:
+    result = ingest_activity(
+        user_id=user_id,
+        activity_id=activity_id,
+        include_details=include_details,
+        include_files=include_files,
+        activity_summary=summary,
+        raise_on_error=True,
+    )
+    if result.status != "success":
+        if result.error == "Failed to load tokens":
+            raise GarminTokenLoadError(result.error)
+        raise RuntimeError(
+            result.error or f"Activity {activity_id} had {result.errors} error(s)"
+        )
+    return result.as_dict()
 
 
 def _get_logger():

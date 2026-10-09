@@ -23,6 +23,7 @@ from garmin_sync.ingest.object_registry import (
     PERSONAL_RECORDS,
     normalize_data_types,
 )
+from garmin_sync.ingest.reconciliation import PAGE_SIZE, RECONCILIATION
 from garmin_sync.ingest.results import IngestResult, aggregate_results
 
 from garmin_orchestrator.tasks import (
@@ -33,9 +34,10 @@ from garmin_orchestrator.tasks import (
     ingest_daily_summary_day_task,
     ingest_personal_records_task,
     list_activity_summaries_task,
-    reconcile_activity_archive_task,
+    ingest_reconciliation_activity_task,
     resolve_active_users_task,
     resolve_date_window_task,
+    scan_activity_archive_page_task,
 )
 
 
@@ -56,22 +58,76 @@ def garmin_reconcile_activities_flow(
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Run the full activity reconciliation as a standalone manual job."""
-    ensure_database_ready_task()
+    if not dry_run:
+        ensure_database_ready_task()
     users = resolve_active_users_task(user_filter=user)
-    results = [
-        {
-            "user": user_ref["display_name"],
-            "activity_reconciliation": _task_state_result(
-                reconcile_activity_archive_task(
-                    user_id=int(user_ref["id"]),
-                    dry_run=dry_run,
+    results = []
+    for user_ref in users:
+        user_id = int(user_ref["id"])
+        scanned = missing = changed = incomplete = rows = errors = 0
+        error_messages: list[str] = []
+        seen_ids: set[int] = set()
+        offset = 0
+        while True:
+            page_state = scan_activity_archive_page_task(
+                user_id=user_id,
+                offset=offset,
+                dry_run=dry_run,
+                return_state=True,
+            )
+            if not page_state.is_completed():
+                errors += 1
+                error_messages.append(
+                    f"Archive scan failed at offset {offset}: "
+                    f"{page_state.result(raise_on_failure=False)}"
+                )
+                break
+            page = page_state.result()
+            scanned += page["scanned"]
+            errors += len(page["errors"])
+            error_messages.extend(page["errors"])
+            for candidate in page["candidates"]:
+                activity_id = candidate["activity_id"]
+                if activity_id in seen_ids:
+                    continue
+                seen_ids.add(activity_id)
+                missing += candidate["missing"]
+                changed += candidate["changed"]
+                incomplete += candidate["incomplete"]
+                if dry_run:
+                    rows += 1
+                    continue
+                item_state = ingest_reconciliation_activity_task(
+                    user_id=user_id,
+                    activity_id=activity_id,
+                    summary=candidate["summary"],
+                    include_details=candidate["needs_detail"],
+                    include_files=candidate["needs_file"],
                     return_state=True,
-                ),
-                data_type="activity_reconciliation",
-            ),
+                )
+                item_result = _task_state_result(
+                    item_state, data_type=RECONCILIATION
+                )
+                rows += item_result.get("rows", 0)
+                errors += item_result.get("errors", 0)
+                if item_result.get("error"):
+                    error_messages.append(item_result["error"])
+            if page["scanned"] < PAGE_SIZE:
+                break
+            offset += PAGE_SIZE
+
+        result = {
+            "status": "partial" if errors and rows else "error" if errors else "success",
+            "rows": rows,
+            "errors": errors,
+            "scanned": scanned,
+            "missing": missing,
+            "changed": changed,
+            "incomplete": incomplete,
         }
-        for user_ref in users
-    ]
+        if error_messages:
+            result["error"] = "; ".join(error_messages)
+        results.append({"user": user_ref["display_name"], RECONCILIATION: result})
     errors, partials = _count_failures(results)
     summary = {
         "dry_run": dry_run,

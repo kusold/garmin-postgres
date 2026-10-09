@@ -288,7 +288,8 @@ def reconcile_activities(
     from garmin_sync.ingest.pipeline import get_active_users
     from garmin_sync.ingest.reconciliation import reconcile_activity_archive
 
-    _ensure_db_ready()
+    if not dry_run:
+        _ensure_db_ready()
     engine = get_engine()
     with Session(engine) as session:
         users = get_active_users(session, user)

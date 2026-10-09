@@ -55,9 +55,10 @@ missing from PostgreSQL and edits to archived names, types, favorites, and
 personal-record flags. Missing activities receive a full archive run; edited
 activities refresh their activity row. Run it manually with
 `uv run garmin-sync ingest reconcile-activities` (optionally `--user` or
-`--dry-run`) or the `reconcile-activities` Prefect deployment. The Notion sync
-includes recently refreshed archive rows even when their activity dates are
-outside its date window.
+`--dry-run`) or the `reconcile-activities` Prefect deployment. The job also
+retries missing chart details or original files on archived activities. The
+Notion sync includes recently refreshed archive rows even when their activity
+dates are outside its date window.
 Last-written values used to preserve destination edits live in the shared
 `destination_sync_states` table; each destination decides what JSON it stores.
 

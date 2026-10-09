@@ -241,7 +241,10 @@ def test_reconciliation_fully_archives_missing_activity(session, monkeypatch):
 
 def test_reconciliation_refreshes_changed_row_without_optional_steps(session, monkeypatch):
     user = _create_user(session)
-    _create_activity(session, user.id, 202)
+    archived = _create_activity(session, user.id, 202)
+    session.add(ActivityDetail(activity_id=archived.id, raw_json={"chart": [1]}))
+    session.add(ActivityFile(activity_id=archived.id, file_format="fit", file_data=b"old-fit"))
+    session.flush()
 
     class FakeGarminClient:
         def __init__(self, garmin):
@@ -275,8 +278,41 @@ def test_reconciliation_refreshes_changed_row_without_optional_steps(session, mo
     assert result.status == "success"
     assert result.metrics["changed"] == 1
     assert archived.raw_json["activityName"] == "Renamed Run"
-    assert session.scalars(select(ActivityDetail).where(ActivityDetail.activity_id == archived.id)).all() == []
-    assert session.scalars(select(ActivityFile).where(ActivityFile.activity_id == archived.id)).all() == []
+    assert session.scalars(select(ActivityDetail).where(ActivityDetail.activity_id == archived.id)).one().raw_json == {"chart": [1]}
+    assert session.scalars(select(ActivityFile).where(ActivityFile.activity_id == archived.id)).one().file_data == b"old-fit"
+
+
+def test_reconciliation_completes_prior_partial_archive(session, monkeypatch):
+    user = _create_user(session)
+    _create_activity(session, user.id, 208)
+
+    class FakeGarminClient:
+        def __init__(self, garmin):
+            self.garmin = garmin
+
+        def get_activities(self, start, limit):
+            return [{"activityId": 208, "activityName": "Test Run"}]
+
+        def get_activity(self, activity_id):
+            return {"activityId": 208, "activityName": "Test Run"}
+
+        def get_activity_details(self, activity_id, *, maxchart, maxpoly):
+            return {"chart": []}
+
+        def download_activity(self, activity_id):
+            return b"fit-data"
+
+    monkeypatch.setattr(runners, "load_user_client", lambda session, user: object())
+    monkeypatch.setattr(runners, "GarminClient", FakeGarminClient)
+    monkeypatch.setattr(runners, "save_tokens", lambda session, user, garmin: None)
+
+    result = reconcile_activity_archive(user_id=user.id, session=session)
+
+    archived = session.scalars(select(Activity).where(Activity.activity_id == 208)).one()
+    assert result.status == "success"
+    assert result.metrics["incomplete"] == 1
+    assert session.scalars(select(ActivityDetail).where(ActivityDetail.activity_id == archived.id)).one()
+    assert session.scalars(select(ActivityFile).where(ActivityFile.activity_id == archived.id)).one()
 
 
 def test_reconciliation_dry_run_reports_changes_without_writing(session, monkeypatch):
