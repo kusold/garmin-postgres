@@ -441,7 +441,16 @@ Initial deployments:
 | `garmin-archive/daily-summary` | same flow | optional | `data_types=["daily_summary"]` |
 | `garmin-archive/activities` | same flow | optional | `data_types=["activities"]` |
 | `garmin-archive/personal-records` | same flow | optional | `data_types=["personal_records"]` |
-| `garmin-archive/backfill` | same flow | none | explicit dates |
+| `garmin-archive/backfill` | `garmin_orchestrator.flows:garmin_backfill_flow` | none | explicit dates |
+| `garmin-archive/backfill-sweep` | `garmin_orchestrator.flows:garmin_backfill_flow` | weekly (Sat 05:00) | `days_back=14` |
+
+`backfill-sweep` exists because incremental ingestion only covers yesterday
+while Garmin's activity search filters by activity *start* date: anything
+uploaded to Garmin Connect more than a day after it happened is never
+returned by a later incremental run, and daily summaries fetched during an
+offline gap stay stale. The weekly 14-day sweep re-ingests both object
+types on the lower-priority `backfill` work queue, so bulk recovery never
+blocks scheduled ingestion.
 
 Use a local process work pool first:
 

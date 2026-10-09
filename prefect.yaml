@@ -30,6 +30,9 @@ definitions:
     daily_notion_sync: &daily_notion_sync
       cron: "0 7 * * *"
       timezone: America/Denver
+    weekly_backfill_sweep: &weekly_backfill_sweep
+      cron: "0 5 * * 6"
+      timezone: America/Denver
 
 deployments:
   - name: incremental
@@ -112,4 +115,22 @@ deployments:
       dry_run: false
       fail_on_partial: false
       chunk_days: 30
+    work_pool: *garmin_backfill
+
+  - name: backfill-sweep
+    entrypoint: garmin_orchestrator.flows.garmin_backfill_flow
+    description: >-
+      Weekly re-ingest of the trailing 14 days to recover activities and daily
+      summaries uploaded to Garmin Connect late (offline trips, delayed watch
+      syncs). Incremental ingestion only covers yesterday, and Garmin's
+      activity search filters by start date, so late uploads are otherwise
+      never revisited.
+    schedule: *weekly_backfill_sweep
+    concurrency_limit:
+      limit: 1
+      collision_strategy: ENQUEUE
+    parameters:
+      days_back: 14
+      dry_run: false
+      fail_on_partial: false
     work_pool: *garmin_backfill

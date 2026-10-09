@@ -1,7 +1,9 @@
 from datetime import date
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 from prefect.states import Failed
 from typer.testing import CliRunner
 
@@ -89,6 +91,25 @@ def test_configure_work_pool_serializes_jobs_and_prioritizes_schedules(monkeypat
         ("read", "backfill", "garmin-docker"),
         ("create", "backfill", 10, "garmin-docker"),
     ]
+
+
+def test_prefect_yaml_defines_weekly_backfill_sweep():
+    config_path = Path(__file__).parents[3] / "prefect.yaml"
+    config = yaml.safe_load(config_path.read_text())
+
+    sweep = next(d for d in config["deployments"] if d["name"] == "backfill-sweep")
+
+    assert sweep["entrypoint"] == "garmin_orchestrator.flows.garmin_backfill_flow"
+    assert sweep["parameters"]["days_back"] == 14
+    assert sweep["parameters"]["dry_run"] is False
+    # The sweep window must fit one backfill chunk so it never chains.
+    assert sweep["parameters"].get("chunk_days", 30) >= 14
+    assert sweep["work_pool"]["name"] == "garmin-docker"
+    assert sweep["work_pool"]["work_queue_name"] == "backfill"
+    schedule = sweep["schedule"]
+    assert schedule["timezone"] == "America/Denver"
+    day_of_week = schedule["cron"].split()[4]
+    assert day_of_week.isdigit(), "sweep must pin a single weekday to stay weekly"
 
 
 def test_aggregates_child_results_without_losing_metrics():
