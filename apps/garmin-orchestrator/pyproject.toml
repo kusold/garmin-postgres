@@ -8,6 +8,10 @@ dependencies = [
     "garmin-sync",
     "notion-sync",
     "prefect==3.8.0",
+    # Registers the `docker` worker type (prefect.collections entry point).
+    # Needed by the Nix-packaged Prefect worker on app-00, which builds its
+    # venv from this workspace's uv.lock to serve the garmin-docker work pool.
+    "prefect-docker",
     "typer>=0.15.0,<1",
 ]
 

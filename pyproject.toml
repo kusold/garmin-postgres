@@ -13,6 +13,12 @@ dev = [
 
 [tool.uv]
 package = false
+# Prefect's server scheduler is incompatible with SQLAlchemy >= 2.1
+# (PrefectHQ/prefect#23199 — "Can't evaluate bulk DML statement" every
+# scheduler tick). This constraint also governs the app-00 Prefect
+# server/worker venv, which rockymtn builds from this uv.lock. Remove once
+# upstream ships an upper bound on sqlalchemy.
+constraint-dependencies = ["sqlalchemy<2.1"]
 
 [tool.uv.workspace]
 members = [
