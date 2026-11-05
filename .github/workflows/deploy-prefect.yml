@@ -93,5 +93,10 @@ jobs:
           uv sync --locked --all-packages
           uv run --package garmin-orchestrator python -c \
             "from garmin_orchestrator.deployments import configure_work_pool; configure_work_pool()"
-          uv run --package garmin-orchestrator prefect --no-prompt concurrency-limit create garmin-api 1
+          # NOTE: do NOT create a tag:garmin-api concurrency limit. The Prefect server's
+          # increment-with-lease endpoint intermittently commits a slot but never returns
+          # success (v1 and v2 limits alike); the leaked slot wedges every garmin-api
+          # task in PENDING until the 3h flow timeout (2026-11-01 → 2026-11-05 outage).
+          # Flow code already runs these tasks sequentially, so the limit added no
+          # protection. If re-adding later, verify the lease/retry path is fixed upstream.
           uv run --package garmin-orchestrator prefect --no-prompt deploy --all --version "${GITHUB_SHA}"
